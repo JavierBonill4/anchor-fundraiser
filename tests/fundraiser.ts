@@ -55,7 +55,7 @@ describe("fundraiser", () => {
 
     const tx = await program
     .methods
-    .initialize(new anchor.BN(30000000), 0)
+    .initialize(new anchor.BN(30000000), 7)   // days; must be at least 1
     .accountsPartial({
       maker: maker.publicKey,
       fundraiser,
@@ -183,32 +183,31 @@ describe("fundraiser", () => {
     }
   });
   
-  it("Refund Contributions", async () => {
+  // A refund is only legal once the window has closed, so a seven day fundraiser
+  // must refuse one on the day it opens. The successful refund is covered in
+  // tests/time-window-bankrun.ts, which can move the clock past the deadline.
+  it("Refund Contributions - refused while the window is open", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-    let contributorAccount = await program.account.contributor.fetch(contributor);
-    console.log("\nContributor balance", contributorAccount.amount.toString());
-
-    const tx = await program.methods
-    .refund()
-    .accountsPartial({
-      contributor: provider.publicKey,
-      maker: maker.publicKey,
-      mintToRaise: mint,
-      fundraiser,
-      contributorAccount: contributor,
-      contributorAta: contributorATA,
-      vault,
-      tokenProgram: TOKEN_PROGRAM_ID,
-      systemProgram: anchor.web3.SystemProgram.programId,
-    })
-    .rpc({
-      skipPreflight: true,
-    })
-    .then(confirm);
-
-    console.log("\nRefunded contributions", tx);
-    console.log("Your transaction signature", tx);
-    console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
+    try {
+      await program.methods
+      .refund()
+      .accountsPartial({
+        contributor: provider.publicKey,
+        maker: maker.publicKey,
+        mintToRaise: mint,
+        fundraiser,
+        contributorAccount: contributor,
+        contributorAta: contributorATA,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+      throw new Error("the refund should have been refused");
+    } catch (error) {
+      console.log("\nRefund refused while the fundraiser is still running");
+      console.log(error.error?.errorCode?.code ?? error.message);
+    }
   });
 });

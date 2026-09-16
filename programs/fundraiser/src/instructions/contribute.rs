@@ -56,11 +56,15 @@ pub struct Contribute<'info> {
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
 
-        // Check if the amount to contribute meets the minimum amount required
-        require!(
-            amount > 1_u8.pow(self.mint_to_raise.decimals as u32) as u64, 
-            FundraiserError::ContributionTooSmall
-        );
+        // Check that the contribution is at least one whole token.
+        //
+        // The previous form was `1_u8.pow(decimals)`, and 1 raised to any power is 1
+        // — so the check only ever rejected a contribution of a single raw unit.
+        let one_token = 10u64
+            .checked_pow(self.mint_to_raise.decimals as u32)
+            .ok_or(FundraiserError::ContributionTooSmall)?;
+
+        require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
@@ -71,7 +75,8 @@ impl<'info> Contribute<'info> {
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
         require!(
-            ((current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS) < self.fundraiser.duration as i64,
+            (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
+                < self.fundraiser.duration as i64,
             crate::FundraiserError::FundraiserEnded
         );
 
@@ -82,19 +87,16 @@ impl<'info> Contribute<'info> {
             FundraiserError::MaximumContributionsReached
         );
 
-        // Transfer the funds to the vault
-        // CPI to the token program to transfer the funds
-        let cpi_program = self.token_program.to_account_info();
-
-        // Transfer the funds from the contributor to the vault
+        // Transfer the funds from the contributor to the vault.
+        // As of Anchor 1.0 a CpiContext takes the program's *address*, not its
+        // AccountInfo.
         let cpi_accounts = Transfer {
             from: self.contributor_ata.to_account_info(),
             to: self.vault.to_account_info(),
             authority: self.contributor.to_account_info(),
         };
 
-        // Crete a CPI context
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        let cpi_ctx = CpiContext::new(self.token_program.key(), cpi_accounts);
 
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;

@@ -1,5 +1,25 @@
 # Token Fundraiser
 
+## Prerequisites
+
+| Tool | Version |
+| --- | --- |
+| Anchor | 1.1.2 (`avm install 1.1.2 && avm use 1.1.2`) |
+| Solana CLI | 3.1 or newer |
+| Node | 20 or newer, with `yarn` |
+
+```bash
+yarn install
+anchor build
+anchor keys sync   # first time only — see below
+anchor test
+```
+
+The repo declares a program id it does not ship the keypair for, so your first
+`anchor build` generates a different one and `anchor test` fails with
+`DeclaredProgramIdMismatch`. `anchor keys sync` rewrites `declare_id!` and
+`Anchor.toml` to match the keypair you just generated. Run it once, then rebuild.
+
 This example demonstrates how to create a fundraising for SPL Tokens.
 
 In this example, a user will be able to create a fundraiser account, where he will be specify the mint he wants to collect and the fundraising target.

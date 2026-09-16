@@ -17,5 +17,6 @@ no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 
 [dependencies]
-anchor-lang = { version = "0.30.0", features = ["init-if-needed"] }
-anchor-spl = "0.30.0"
+# Pinned exactly so every student's crate matches the CLI the course uses.
+anchor-lang = { version = "=1.1.2", features = ["init-if-needed"] }
+anchor-spl = "=1.1.2"

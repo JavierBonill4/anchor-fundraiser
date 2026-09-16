@@ -58,7 +58,8 @@ impl<'info> Refund<'info> {
         let current_time = Clock::get()?.unix_timestamp;
  
         require!(
-            ((current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS) >= self.fundraiser.duration as i64,
+            (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
+                >= self.fundraiser.duration as i64,
             crate::FundraiserError::FundraiserNotEnded
         );
 
@@ -69,7 +70,8 @@ impl<'info> Refund<'info> {
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
-        let cpi_program = self.token_program.to_account_info();
+        // As of Anchor 1.0 a CpiContext takes the program's address, not its AccountInfo.
+        let cpi_program = self.token_program.key();
 
         // Transfer the funds from the vault to the contributor
         let cpi_accounts = Transfer {
