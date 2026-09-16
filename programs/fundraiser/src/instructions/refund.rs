@@ -1,10 +1,12 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{
-    transfer, 
+    transfer,
+    close_account,
     Mint, 
     Token, 
     TokenAccount, 
-    Transfer
+    Transfer,
+    CloseAccount
 };
 
 use crate::{
@@ -19,6 +21,7 @@ use crate::{
 pub struct Refund<'info> {
     #[account(mut)]
     pub contributor: Signer<'info>,
+    #[account(mut)]
     pub maker: SystemAccount<'info>,
     pub mint_to_raise: Account<'info, Mint>,
     #[account(
@@ -54,12 +57,12 @@ pub struct Refund<'info> {
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
 
-        // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
+        let time_ended = (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS >= self.fundraiser.duration as i64;
  
+        // Can refund if time has ended OR if maker cancelled early
         require!(
-            (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
-                >= self.fundraiser.duration as i64,
+            time_ended || self.fundraiser.cancelled,
             crate::FundraiserError::FundraiserNotEnded
         );
 
@@ -68,33 +71,39 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::TargetMet
         );
 
-        // Transfer the funds back to the contributor
-        // CPI to the token program to transfer the funds
-        // As of Anchor 1.0 a CpiContext takes the program's address, not its AccountInfo.
         let cpi_program = self.token_program.key();
 
-        // Transfer the funds from the vault to the contributor
         let cpi_accounts = Transfer {
             from: self.vault.to_account_info(),
             to: self.contributor_ata.to_account_info(),
             authority: self.fundraiser.to_account_info(),
         };
 
-        // Signer seeds to sign the CPI on behalf of the fundraiser account
         let signer_seeds: [&[&[u8]]; 1] = [&[
             b"fundraiser".as_ref(),
             self.maker.to_account_info().key.as_ref(),
             &[self.fundraiser.bump],
         ]];
 
-        // CPI context with signer since the fundraiser account is a PDA
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
 
-        // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
-        // Update the fundraiser state by reducing the amount contributed
         self.fundraiser.current_amount -= self.contributor_account.amount;
+
+        // If this is the absolute last refund, close the vault and the fundraiser PDA
+        if self.vault.amount == self.contributor_account.amount {
+            let close_cpi_accounts = CloseAccount {
+                account: self.vault.to_account_info(),
+                destination: self.maker.to_account_info(),
+                authority: self.fundraiser.to_account_info(),
+            };
+            let close_cpi_ctx = CpiContext::new_with_signer(self.token_program.key(), close_cpi_accounts, &signer_seeds);
+            close_account(close_cpi_ctx)?;
+
+            // Close the fundraiser PDA manually
+            self.fundraiser.close(self.maker.to_account_info())?;
+        }
 
         Ok(())
     }

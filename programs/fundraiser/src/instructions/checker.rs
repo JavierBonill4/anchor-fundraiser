@@ -2,11 +2,13 @@ use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken, 
     token::{
-        transfer, 
+        transfer,
+        close_account, 
         Mint, 
         Token, 
         TokenAccount, 
-        Transfer
+        Transfer,
+        CloseAccount
     }
 };
 
@@ -24,7 +26,7 @@ pub struct CheckContributions<'info> {
         mut,
         seeds = [b"fundraiser".as_ref(), maker.key().as_ref()],
         bump = fundraiser.bump,
-        close = maker,
+        // Removed close = maker to leave it open for contributor cleanup
     )]
     pub fundraiser: Account<'info, Fundraiser>,
     #[account(
@@ -46,7 +48,7 @@ pub struct CheckContributions<'info> {
 }
 
 impl<'info> CheckContributions<'info> {
-    pub fn check_contributions(&self) -> Result<()> {
+    pub fn check_contributions(&mut self) -> Result<()> {
         
         // Check if the target amount has been met
         require!(
@@ -55,29 +57,37 @@ impl<'info> CheckContributions<'info> {
         );
 
         // Transfer the funds to the maker
-        // CPI to the token program to transfer the funds
-        // As of Anchor 1.0 a CpiContext takes the program's address, not its AccountInfo.
         let cpi_program = self.token_program.key();
 
-        // Transfer the funds from the vault to the maker
         let cpi_accounts = Transfer {
             from: self.vault.to_account_info(),
             to: self.maker_ata.to_account_info(),
             authority: self.fundraiser.to_account_info(),
         };
 
-        // Signer seeds to sign the CPI on behalf of the fundraiser account
         let signer_seeds: [&[&[u8]]; 1] = [&[
             b"fundraiser".as_ref(),
             self.maker.to_account_info().key.as_ref(),
             &[self.fundraiser.bump],
         ]];
 
-        // CPI context with signer since the fundraiser account is a PDA
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
 
         // Transfer the funds from the vault to the maker
         transfer(cpi_ctx, self.vault.amount)?;
+
+        // Close the vault to recover the rent back to the maker
+        let close_cpi_accounts = CloseAccount {
+            account: self.vault.to_account_info(),
+            destination: self.maker.to_account_info(),
+            authority: self.fundraiser.to_account_info(),
+        };
+
+        let close_cpi_ctx = CpiContext::new_with_signer(self.token_program.key(), close_cpi_accounts, &signer_seeds);
+        close_account(close_cpi_ctx)?;
+
+        // Set target_met flag so contributors can safely clean up their accounts
+        self.fundraiser.target_met = true;
 
         Ok(())
     }
