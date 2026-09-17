@@ -98,6 +98,7 @@ jobs:
         run: |
           git remote add upstream https://github.com/JavierBonill4/anchor-fundraiser
           git fetch upstream main
+          rm -rf programs
           git checkout upstream/main -- programs
           ! grep -r milestones programs && echo "base program has no milestone code"
 
