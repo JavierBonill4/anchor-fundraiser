@@ -1,5 +1,8 @@
 # Token Fundraiser
 
+> **Custom feature: milestones at 25/50/75%.** Design, costs and attacks are in
+> [MILESTONES.md](MILESTONES.md); tests in `tests/milestones-bankrun.ts`.
+
 ## Prerequisites
 
 | Tool | Version |
