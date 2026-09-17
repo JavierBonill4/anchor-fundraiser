@@ -108,9 +108,9 @@ impl<'info> Contribute<'info> {
         
         let quarters = self.fundraiser.current_amount
                         .checked_mul(4)
-                        .ok_or(FundraiserError::Overflow)?
+                        .ok_or(ProgramError::ArithmeticOverflow)?
                         .checked_div(self.fundraiser.amount_to_raise)
-                        .ok_or(FundraiserError::Overflow)?;
+                        .ok_or(ProgramError::ArithmeticOverflow)?;
 
         for i in 0..quarters.min(3) {
             let flag = 1u8 << i;
