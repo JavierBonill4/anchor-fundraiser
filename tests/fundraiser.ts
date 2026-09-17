@@ -3,6 +3,7 @@ import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
+import { assert } from "chai";
 
 describe("fundraiser", () => {
   // Configure the client to use the local cluster.
@@ -182,6 +183,162 @@ describe("fundraiser", () => {
       console.log(error.msg);
     }
   });
+  it("Progressing past 25% sets bit 0 in milestonesFired", async () => {
+  const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+  // 1. Fetch current fundraiser state to read the exact target amount
+  const fundraiserData = await program.account.fundraiser.fetch(fundraiser);
+  const target = fundraiserData.amountToRaise;
+
+  // Max contribution per donor = target * 10 / 100
+  const maxContribPerDonor = target.muln(10).divn(100); 
+  
+  // Choose a safe amount strictly less than or equal to maxContribPerDonor (e.g., 90% of max)
+  const safeContribution = maxContribPerDonor.muln(9).divn(10);
+
+  const createFreshContributor = async () => {
+    const keypair = anchor.web3.Keypair.generate();
+    await provider.connection.requestAirdrop(keypair.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
+    
+    const ata = (await getOrCreateAssociatedTokenAccount(provider.connection, wallet.payer, mint, keypair.publicKey)).address;
+    await mintTo(provider.connection, wallet.payer, mint, ata, provider.publicKey, safeContribution.toNumber() * 2);
+    
+    const contributorPda = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("contributor"), fundraiser.toBuffer(), keypair.publicKey.toBuffer()],
+      program.programId
+    )[0];
+
+    return { keypair, ata, contributorPda };
+  };
+
+  const contributeIx = async (donor: Awaited<ReturnType<typeof createFreshContributor>>) => {
+    await program.methods
+      .contribute(safeContribution)
+      .accountsPartial({
+        contributor: donor.keypair.publicKey,
+        fundraiser,
+        contributorAccount: donor.contributorPda,
+        contributorAta: donor.ata,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        mintToRaise: mint,
+      })
+      .signers([donor.keypair])
+      .rpc()
+      .then(confirm);
+  };
+
+  // Keep adding contributors until global current_amount crosses 25%
+  let currentState = await program.account.fundraiser.fetch(fundraiser);
+  const target25Percent = target.divn(4);
+
+  while (currentState.currentAmount.lt(target25Percent)) {
+    const freshDonor = await createFreshContributor();
+    await contributeIx(freshDonor);
+    currentState = await program.account.fundraiser.fetch(fundraiser);
+  }
+
+  // Verify milestone bit 0 is set
+  assert.strictEqual(
+    currentState.milestonesFired & 1,
+    1,
+    "Bit 0 should be set once 25% threshold is crossed"
+  );
+});
+
+ it("Boundary: below 25% fires nothing; crossing 25% sets bit 0", async () => {
+  const cleanMaker = anchor.web3.Keypair.generate();
+  await provider.connection.requestAirdrop(cleanMaker.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
+
+  const cleanFundraiser = anchor.web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("fundraiser"), cleanMaker.publicKey.toBuffer()],
+    program.programId
+  )[0];
+
+  const vault = getAssociatedTokenAddressSync(mint, cleanFundraiser, true);
+
+  // 1. Initialize fresh fundraiser (30,000,000 target => 7,500,000 for 25%)
+  await program.methods
+    .initialize(new anchor.BN(30_000_000), 7)
+    .accountsPartial({
+      maker: cleanMaker.publicKey,
+      fundraiser: cleanFundraiser,
+      mintToRaise: mint,
+      vault,
+      systemProgram: anchor.web3.SystemProgram.programId,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    })
+    .signers([cleanMaker])
+    .rpc()
+    .then(confirm);
+
+  const target = new anchor.BN(30_000_000);
+  const maxContrib = target.muln(10).divn(100); // 3,000,000 max per donor
+
+  const makeFreshDonor = async () => {
+    const kp = anchor.web3.Keypair.generate();
+    await provider.connection.requestAirdrop(kp.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
+
+    const ata = (await getOrCreateAssociatedTokenAccount(provider.connection, wallet.payer, mint, kp.publicKey)).address;
+    await mintTo(provider.connection, wallet.payer, mint, ata, provider.publicKey, maxContrib.toNumber());
+
+    const pda = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("contributor"), cleanFundraiser.toBuffer(), kp.publicKey.toBuffer()],
+      program.programId
+    )[0];
+
+    return { kp, ata, pda };
+  };
+
+  const sendContrib = async (donor: Awaited<ReturnType<typeof makeFreshDonor>>, amount: number) => {
+    await program.methods
+      .contribute(new anchor.BN(amount))
+      .accountsPartial({
+        contributor: donor.kp.publicKey,
+        fundraiser: cleanFundraiser,
+        contributorAccount: donor.pda,
+        contributorAta: donor.ata,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        mintToRaise: mint,
+      })
+      .signers([donor.kp])
+      .rpc()
+      .then(confirm);
+  };
+
+  // 2. Fund to 7,499,000 total (1,000 units below 25%)
+  // Donor 1: 3,000,000
+  // Donor 2: 3,000,000
+  // Donor 3: 1,499,000
+  const d1 = await makeFreshDonor();
+  const d2 = await makeFreshDonor();
+  const d3 = await makeFreshDonor();
+
+  await sendContrib(d1, 3_000_000);
+  await sendContrib(d2, 3_000_000);
+  await sendContrib(d3, 1_499_000);
+
+  let state = await program.account.fundraiser.fetch(cleanFundraiser);
+  assert.strictEqual(
+    state.milestonesFired & 1,
+    0,
+    "Below 25% threshold must NOT set bit 0"
+  );
+
+  // 3. Donor 4 contributes 1,000,000 units (the minimum, one whole token),
+  // pushing the total past the 7,500,000 threshold
+  const d4 = await makeFreshDonor();
+  await sendContrib(d4, 1_000_000);
+
+  state = await program.account.fundraiser.fetch(cleanFundraiser);
+  assert.strictEqual(
+    state.milestonesFired & 1,
+    1,
+    "Crossing 25% must set bit 0"
+  );
+});
   
   // A refund is only legal once the window has closed, so a seven day fundraiser
   // must refuse one on the day it opens. The successful refund is covered in

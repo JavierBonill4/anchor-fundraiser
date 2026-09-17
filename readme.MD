@@ -490,3 +490,8 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+
+## Display MileStoneReached 
+
+At 25%, 50%, and 75% of the fundraising target. The frontend can listen for the event and display the achievement. Each milestone fires only once, and refunds do not undo a milestone.

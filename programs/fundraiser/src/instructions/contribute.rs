@@ -105,6 +105,20 @@ impl<'info> Contribute<'info> {
         self.fundraiser.current_amount += amount;
 
         self.contributor_account.amount += amount;
+        
+        let quarters = self.fundraiser.current_amount
+                        .checked_mul(4)
+                        .ok_or(ProgramError::ArithmeticOverflow)?
+                        .checked_div(self.fundraiser.amount_to_raise)
+                        .ok_or(ProgramError::ArithmeticOverflow)?;
+
+        for i in 0..quarters.min(3) {
+            let flag = 1u8 << i;
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+            }
+    }
+
 
         Ok(())
     }

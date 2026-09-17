@@ -60,6 +60,7 @@ impl<'info> Initialize<'info> {
             mint_to_raise: self.mint_to_raise.key(),
             amount_to_raise: amount,
             current_amount: 0,
+            milestones_fired : 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
             bump: bumps.fundraiser
