@@ -1,4 +1,5 @@
 [toolchain]
+anchor_version = "1.1.2"
 
 [features]
 resolution = true
@@ -8,7 +9,7 @@ skip-lint = false
 fundraiser = "Eoiuq1dXvHxh6dLx3wh9gj8kSAUpga11krTrbfF5XYsC"
 
 [programs.localnet]
-fundraiser = "7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW"
+fundraiser = "6YGZwBBDei3Uto9oShJ1CqnfNZcCRg8KDceVShGA2WsY"
 
 [provider]
 cluster = "localnet"
@@ -16,5 +17,3 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
-
-[hooks]
