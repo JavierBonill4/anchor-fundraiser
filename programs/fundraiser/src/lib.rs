@@ -42,4 +42,13 @@ pub mod fundraiser {
 
         Ok(())
     }
+
+    /// The maker acknowledges one milestone the campaign has already crossed.
+    /// Guarded by its own flag, so each index can be announced exactly once.
+    pub fn acknowledge_milestone(ctx: Context<AcknowledgeMilestone>, index: u8) -> Result<()> {
+
+        ctx.accounts.acknowledge_milestone(index)?;
+
+        Ok(())
+    }
 }
