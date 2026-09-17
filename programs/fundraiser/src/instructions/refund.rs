@@ -1,18 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, 
-    SECONDS_TO_DAYS
+    state::{Contributor, Fundraiser},
+    SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -53,10 +44,9 @@ pub struct Refund<'info> {
 
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
-
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
- 
+
         require!(
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 >= self.fundraiser.duration as i64,
@@ -93,8 +83,12 @@ impl<'info> Refund<'info> {
         // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        // Update the fundraiser state by reducing the amount contributed.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(crate::FundraiserError::Overflow)?;
 
         Ok(())
     }

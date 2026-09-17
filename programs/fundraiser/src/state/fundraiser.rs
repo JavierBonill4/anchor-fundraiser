@@ -10,4 +10,6 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    // Bits 0, 1 and 2 represent the 25%, 50% and 75% milestones.
+    pub milestones_fired: u8,
 }
