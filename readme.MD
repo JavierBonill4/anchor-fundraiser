@@ -20,6 +20,41 @@ The repo declares a program id it does not ship the keypair for, so your first
 `DeclaredProgramIdMismatch`. `anchor keys sync` rewrites `declare_id!` and
 `Anchor.toml` to match the keypair you just generated. Run it once, then rebuild.
 
+## Feature: one-way milestone events
+
+### What it does
+
+The fundraiser emits an on-chain `MilestoneReached` event when its running total
+reaches 25%, 50%, or 75% of the target. Each milestone is recorded once, so a
+front end can react to the event without worrying about duplicate notifications.
+The feature benefits contributors and makers by making campaign progress easy to
+index, while a dishonest caller would try to replay a mark after a refund or
+cross it repeatedly with later contributions.
+
+### How it works
+
+`milestones_fired: u8` is appended to `Fundraiser`; bits 0, 1, and 2 represent
+the three marks. At the end of `contribute`, the program computes
+`current_amount * 4 / amount_to_raise` with checked arithmetic, then emits one
+event for each newly reached bit. Refunds lower `current_amount` but do not clear
+the bits, making the history one-way and idempotent.
+
+### What it costs
+
+The fundraiser account grows by one byte, so the maker pays one additional byte
+of rent. There are no new accounts. Contributions that cross no new mark only
+pay for a small checked calculation and bit check; crossing a mark adds one event
+and its log data to the transaction.
+
+### How I would attack it
+
+The main weakness is that a refund can make the live percentage fall below a
+milestone that was already recorded. That is intentional: progress history must
+not flicker, but a client must use `current_amount` for the current percentage.
+The program also emits events only when a contribution instruction succeeds, so
+an indexer must treat the transaction as the source of truth and ignore failed
+transactions.
+
 This example demonstrates how to create a fundraising for SPL Tokens.
 
 In this example, a user will be able to create a fundraiser account, where he will be specify the mint he wants to collect and the fundraising target.
@@ -41,6 +76,7 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub milestones_fired: u8,
 }
 ```
 
@@ -59,6 +95,8 @@ pub struct Fundraiser {
 - duration: the timeframe to collect all the contributions (in days) 
 
 - bump: since our Fundraiser account will be a PDA (Program Derived Address), we will store the bump of the account
+
+- milestones_fired: one bit each for the 25%, 50% and 75% progress milestones
 
 We use InitSpace derive macro to implement the space triat that will calculate the amount of space that our account will use on-chain (without taking the anchor discriminator into consideration)
 
