@@ -490,3 +490,38 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: Milestones (25 / 50 / 75)
+
+Written before the Rust changes. Custom lifecycle cleanup is out of scope for this PR.
+
+### What it does
+
+After each accepted contribution, the program checks whether the campaign has crossed 25%, 50%, or 75% of amount_to_raise. Each mark fires at most once. Contributors and the maker can read milestones_fired and the emitted events to see which marks have already been reached. The four original instructions stay the same.
+
+### How it works
+
+- State: one new field on Fundraiser, milestones_fired: u8, initialized to 0.
+- Bits: 0b001 = 25%, 0b010 = 50%, 0b100 = 75%.
+- Trigger: end of contribute, after the token transfer and after current_amount is updated with checked_add.
+- For each mark, compute threshold with checked_mul / checked_div (amount_to_raise * percent / 100). If current_amount >= threshold and that bit is off, set the bit and emit a MilestoneReached event.
+- The loop always visits 25, then 50, then 75, so one contribution that jumps from 0% to 80% sets all three bits in that same call.
+- refund does not clear bits. Milestones are a high-water record, not a live percentage.
+
+### What it costs
+
+- Rent: one extra byte on the Fundraiser account. InitSpace will grow by 1. No new PDA, no extra accounts, contributor rent is unchanged.
+- Compute: three checked_mul / checked_div pairs and a few bit ops at the end of contribute. No extra CPI.
+- Events add a small log-size cost on the transaction that crosses a mark.
+
+### How you would attack it
+
+- Skip a mark with one large contribution. If the code only tested the next mark, 0% to 80% would skip 25 and 50. Mitigation: always loop all three.
+- Refund, then contribute again to re-fire the same mark. If flags cleared on refund, a donor could farm events. Mitigation: bits are sticky.
+- Overflow the percentage math. amount_to_raise * 75 can overflow a u64. Mitigation: checked_mul / checked_div only; no floats; no bare *.
+- Trust a stale current_amount. The vault is the token-side truth. Mitigation: update current_amount only after a successful transfer, use checked_add / checked_sub, and add a test that asserts both the bit and the vault balance.
+- Integer truncation. 25% of a target that is not divisible by 4 rounds down. A campaign can sit one lamport under a mark and never fire it. That is accepted and documented.
+- A rule that only TypeScript obeys is not a rule. The bitmask and the math live in the program.
+
