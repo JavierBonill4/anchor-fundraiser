@@ -490,3 +490,27 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+
+---
+
+# Feature C — NFT receipt
+
+## What it does
+The first time a wallet contributes to a fundraiser, the program mints a one-of-one receipt NFT to that wallet. The mint is a PDA: seeds `["receipt", fundraiser, contributor]`, decimals 0, supply 1. A later contribution from the same wallet does not mint another token. Refunds return the raised tokens and leave the NFT in place — it is a receipt of participation, not a claim check.
+
+## How it works
+- New field on `Contributor`: `receipt_minted: bool`. Default false. Flipped to true after the first successful `mint_to`.
+- `contribute` gained two accounts: `receipt_mint` (init_if_needed PDA mint) and `receipt_ata` (init_if_needed ATA of the contributor).
+- After the vault transfer, if `receipt_minted` is false the fundraiser PDA signs `mint_to` of 1 token into `receipt_ata`, then sets the flag. Token amounts use `checked_add` / `checked_mul`.
+- Mint authority stays the fundraiser PDA. Setting it to `None` breaks `init_if_needed` + `mint::authority = fundraiser` on the second contribute (Anchor checks that constraint before our handler runs). The flag is the on-chain "fire once" switch.
+
+## What it costs
+- Extra rent: one mint account + one ATA per contributor who donates at least once.
+- Extra CU on the first contribute: create mint, create ATA, `MintTo`. First contribute in tests sits around 80k–90k CU vs ~30k for a later contribute that only transfers.
+- Later contributes and the original initialize / check_contributions / refund paths do not allocate new receipt accounts beyond what Anchor already resolves.
+
+## How you would attack it
+1. **Refund keeps the NFT.** A contributor can donate, receive the receipt, wait for the campaign to fail, refund the tokens, and still hold the NFT. The program does not burn it. Burning would require the NFT to still sit in `receipt_ata`; the holder can transfer it away first and the burn would fail or hit the wrong account. Treat the NFT as "I participated", not "my money is still in the vault".
+2. **PDA mint authority is not None.** If `receipt_minted` were ever skipped, the fundraiser PDA could mint another receipt. The flag is checked on-chain before `mint_to`. Do not trust a client that "just does not send the mint accounts".
+3. **First-contribute griefing.** The contributor pays rent for the mint and ATA. That is intended.
