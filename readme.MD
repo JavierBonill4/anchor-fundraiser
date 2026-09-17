@@ -494,4 +494,4 @@ After doing the proper checks, we transfer the donated funds from the vault back
 
 ## Display MileStoneReached 
 
-At 25%, 50%, and 75% of the fundraising target, emit a MilestoneReached event. The frontend can listen for the event and display the achievement. Each milestone fires only once, and refunds do not undo a milestone.
+At 25%, 50%, and 75% of the fundraising target. The frontend can listen for the event and display the achievement. Each milestone fires only once, and refunds do not undo a milestone.
