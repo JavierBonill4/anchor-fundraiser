@@ -199,8 +199,16 @@ describe("fundraiser — the window closes (bankrun)", () => {
       [maker]
     );
 
-    const contributeIx = () =>
-      program.methods
+    const contributeIx = () => {
+      const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("receipt"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
+        program.programId
+      );
+      const contributorReceiptAta = getAssociatedTokenAddressSync(
+        receiptMint,
+        payer.publicKey
+      );
+      return program.methods
         .contribute(new anchor.BN(CONTRIBUTION))
         .accountsPartial({
           contributor: payer.publicKey,
@@ -209,10 +217,14 @@ describe("fundraiser — the window closes (bankrun)", () => {
           contributorAccount,
           contributorAta,
           vault,
+          receiptMint,
+          contributorReceiptAta,
           tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
         .instruction();
+    };
 
     // --- day 0: the window is open --------------------------------------
     try {

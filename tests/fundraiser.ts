@@ -78,6 +78,12 @@ describe("fundraiser", () => {
   it("Contribute to Fundraiser", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+    const receiptMint = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+      program.programId
+    )[0];
+    const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey);
+
     const tx = await program.methods
     .contribute(new anchor.BN(1000000))
     .accountsPartial({
@@ -86,7 +92,10 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint,
+      contributorReceiptAta,
       tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
     })
     .rpc({
       skipPreflight: true,
@@ -103,6 +112,12 @@ describe("fundraiser", () => {
   it("Contribute to Fundraiser", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+    const receiptMint = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+      program.programId
+    )[0];
+    const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey);
+
     const tx = await program.methods
     .contribute(new anchor.BN(1000000))
     .accountsPartial({
@@ -111,7 +126,10 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint,
+      contributorReceiptAta,
       tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
     })
     .rpc({
       skipPreflight: true,
@@ -130,6 +148,12 @@ describe("fundraiser", () => {
     try {
       const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+      const receiptMint = anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("receipt"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+        program.programId
+      )[0];
+      const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey);
+
       const tx = await program.methods
       .contribute(new anchor.BN(2000000))
       .accountsPartial({
@@ -138,7 +162,10 @@ describe("fundraiser", () => {
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,
+        receiptMint,
+        contributorReceiptAta,
         tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
       .rpc({
         skipPreflight: true,
