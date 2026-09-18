@@ -1,18 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, 
-    SECONDS_TO_DAYS
+    state::{Contributor, Fundraiser},
+    FundraiserError, SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -53,13 +44,14 @@ pub struct Refund<'info> {
 
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
-
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
- 
+        let elapsed = current_time
+            .checked_sub(self.fundraiser.time_started)
+            .ok_or(FundraiserError::MathOverflow)?;
+
         require!(
-            (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
-                >= self.fundraiser.duration as i64,
+            elapsed / SECONDS_TO_DAYS >= self.fundraiser.duration as i64,
             crate::FundraiserError::FundraiserNotEnded
         );
 
@@ -67,6 +59,12 @@ impl<'info> Refund<'info> {
             self.vault.amount < self.fundraiser.amount_to_raise,
             crate::FundraiserError::TargetMet
         );
+
+        let new_total = self
+            .fundraiser
+            .current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(FundraiserError::MathOverflow)?;
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
@@ -94,7 +92,7 @@ impl<'info> Refund<'info> {
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
         // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        self.fundraiser.current_amount = new_total;
 
         Ok(())
     }

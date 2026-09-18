@@ -1,20 +1,11 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    newly_reached_milestones, percentage_of,
+    state::{Contributor, Fundraiser},
+    FundraiserError, MilestoneReached, ANCHOR_DISCRIMINATOR, MAX_CONTRIBUTION_PERCENTAGE,
+    MILESTONES, SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -55,37 +46,60 @@ pub struct Contribute<'info> {
 
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
-
         // Check that the contribution is at least one whole token.
         //
         // The previous form was `1_u8.pow(decimals)`, and 1 raised to any power is 1
         // — so the check only ever rejected a contribution of a single raw unit.
         let one_token = 10u64
             .checked_pow(self.mint_to_raise.decimals as u32)
-            .ok_or(FundraiserError::ContributionTooSmall)?;
+            .ok_or(FundraiserError::MathOverflow)?;
 
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
-        // Check if the amount to contribute is less than the maximum allowed contribution
+        let maximum_contribution =
+            percentage_of(self.fundraiser.amount_to_raise, MAX_CONTRIBUTION_PERCENTAGE)
+                .ok_or(FundraiserError::MathOverflow)?;
+
+        // Check if the amount to contribute is less than the maximum allowed contribution.
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= maximum_contribution,
             FundraiserError::ContributionTooBig
         );
 
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
+        let elapsed = current_time
+            .checked_sub(self.fundraiser.time_started)
+            .ok_or(FundraiserError::MathOverflow)?;
         require!(
-            (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
-                < self.fundraiser.duration as i64,
+            elapsed / SECONDS_TO_DAYS < self.fundraiser.duration as i64,
             crate::FundraiserError::FundraiserEnded
         );
 
-        // Check if the maximum contributions per contributor have been reached
+        let new_contributor_amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::MathOverflow)?;
+
+        // Check if the maximum contributions per contributor have been reached.
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            self.contributor_account.amount <= maximum_contribution
+                && new_contributor_amount <= maximum_contribution,
             FundraiserError::MaximumContributionsReached
         );
+
+        let new_total = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::MathOverflow)?;
+        let newly_reached = newly_reached_milestones(
+            self.fundraiser.amount_to_raise,
+            new_total,
+            self.fundraiser.milestones_reached,
+        )
+        .ok_or(FundraiserError::MathOverflow)?;
 
         // Transfer the funds from the contributor to the vault.
         // As of Anchor 1.0 a CpiContext takes the program's *address*, not its
@@ -101,10 +115,20 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Persist contribution totals and every newly crossed milestone.
+        self.fundraiser.current_amount = new_total;
+        self.contributor_account.amount = new_contributor_amount;
+        self.fundraiser.milestones_reached |= newly_reached;
 
-        self.contributor_account.amount += amount;
+        for (percentage, bit) in MILESTONES {
+            if newly_reached & bit != 0 {
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    percentage,
+                    total_amount: new_total,
+                });
+            }
+        }
 
         Ok(())
     }
