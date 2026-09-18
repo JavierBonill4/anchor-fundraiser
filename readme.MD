@@ -490,3 +490,23 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Milestone Tracking
+
+### What it does
+
+The fundraiser permanently records when campaign progress first reaches 25%, 50%, and 75% of the target. Clients can read this history from the fundraiser account without reconstructing it from transactions or trusting off-chain state.
+
+### How it works
+
+`milestones_reached: u8` is stored in the `Fundraiser` account. Bit 0 represents 25%, bit 1 represents 50%, and bit 2 represents 75%. After each successful SPL token contribution, the on-chain program uses checked integer arithmetic to calculate the updated total and the three thresholds. Threshold calculation splits the target into quotient and remainder before applying the percentage, which produces `floor(target * percentage / 100)` without overflowing a `u64`. Each threshold uses `>=`, and all three are evaluated independently, so an exact boundary counts and one state transition can record several crossed milestones. A `MilestoneReached` event is emitted only when its bit changes from unset to set. The bitmask is historical and refunds never clear it.
+
+### What it costs
+
+The fundraiser state adds one byte through `InitSpace`, which slightly increases account size and rent. Each contribution performs several checked integer operations, three threshold comparisons, and up to three bit updates. Newly reached milestones also incur event logging compute cost. The feature needs no extra PDA or token account.
+
+### How I would attack it
+
+I would test targets near `u64::MAX` to look for overflow in `target * percentage`; the quotient-and-remainder calculation and checked operations prevent wrapping. I would probe non-divisible targets and exact boundaries; thresholds deliberately round down and use `>=`, and both cases are tested. I would try a contribution that crosses several thresholds and repeated contributions after a threshold; the program evaluates every milestone independently and filters against the persistent mask before setting bits or emitting events. I would then refund below a threshold and look for replay; refund changes `current_amount` with `checked_sub` but never clears milestone history. I would ignore client checks and submit crafted account inputs directly; the milestone transition runs inside the program, while Anchor constrains the fundraiser PDA, mint, contributor PDA, and token accounts. Reinitializing the same campaign is prevented by the existing `init` PDA constraint. Finally, I would test the interaction with the existing 10% per-transaction and aggregate contributor caps using many wallets; those caps remain enforced with checked math, while the pure milestone evaluator separately proves that one update can record multiple crossings.
