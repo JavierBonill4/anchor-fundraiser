@@ -490,3 +490,213 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+---
+
+# Homework Feature: Non-Transferable Backer Receipt
+
+## What the Feature Does
+
+This project adds a one-time backer receipt for fundraiser contributors.
+
+After a wallet makes a valid contribution, it can call the `mint_receipt`
+instruction to receive one unique SPL token receipt.
+
+The receipt:
+
+- Has zero decimals.
+- Has a supply of exactly one.
+- Can only be minted after a valid contribution.
+- Can only be minted once per contributor and fundraiser.
+- Is frozen immediately after minting.
+- Cannot be transferred or sold to another wallet.
+- Can be used as proof of participation for future token rewards.
+
+This is an NFT-style SPL receipt token. It does not currently include Metaplex
+name, image, or URI metadata.
+
+## Simple Explanation
+
+The fundraiser works like a school fundraiser.
+
+1. A person contributes tokens.
+2. The program records how many tokens they contributed.
+3. The person asks for their backer receipt.
+4. The program checks that they really contributed.
+5. The program creates exactly one receipt.
+6. The receipt is frozen in their wallet so it cannot be transferred.
+7. The receipt can later help prove that the wallet supported the fundraiser.
+
+It is similar to receiving a digital badge for helping a fundraiser.
+
+## How It Works
+
+Each contributor has a `Contributor` PDA derived from:
+
+```text
+["contributor", fundraiser, contributor]
+
+```
+
+The Contributor PDA stores:
+
+```rust
+pub struct Contributor {
+    pub amount: u64,
+    pub receipt_minted: bool,
+}
+```
+
+- `amount` records the wallet's total contribution.
+- `receipt_minted` prevents the wallet from minting another receipt.
+
+Each receipt mint is a PDA derived from:
+
+```text
+["receipt", fundraiser, contributor]
+```
+
+Including both the fundraiser and contributor addresses gives every contributor
+a unique receipt for each fundraiser.
+
+The fundraiser PDA controls the receipt mint. It signs the Token Program CPIs
+that:
+
+1. Mint exactly one receipt token.
+2. Freeze the contributor's receipt token account.
+
+The program changes `receipt_minted` to `true` only after both token operations
+succeed.
+
+## Future Reward Drops
+
+The receipt is designed to support future drops of another token.
+
+A future reward instruction should require both:
+
+- The contributor's frozen receipt token.
+- The live `Contributor` PDA for that fundraiser and wallet.
+
+The receipt alone must not be accepted as proof.
+
+When a failed fundraiser issues a refund, the program closes the Contributor
+PDA. The frozen receipt may remain as a souvenir, but it cannot qualify for
+future rewards because the required Contributor PDA no longer exists.
+
+The reward-token drop itself is outside the scope of this homework feature.
+
+## Checked Arithmetic
+
+Contribution and refund calculations use checked arithmetic:
+
+```rust
+checked_pow
+checked_mul
+checked_div
+checked_add
+checked_sub
+```
+
+If a calculation overflows or underflows, the program returns the named
+`ArithmeticOverflow` error instead of allowing the value to wrap around.
+
+The minimum contribution is calculated with:
+
+```rust
+10u64.checked_pow(mint.decimals as u32)
+```
+
+For a mint with six decimals, one complete token equals `1_000_000` raw units.
+
+## Costs
+
+The contributor pays the rent needed to create:
+
+- Their Contributor PDA, if it does not already exist.
+- Their receipt mint PDA.
+- Their receipt associated token account.
+
+Minting also consumes compute units for:
+
+- Creating the mint.
+- Creating the associated token account.
+- Minting one receipt through a CPI.
+- Freezing the receipt account through a CPI.
+
+The receipt is minted separately from the contribution. This keeps the normal
+contribution instruction smaller and lets the contributor decide whether they
+want to pay the additional receipt-account costs.
+
+## Attacks and Mitigations
+
+### Minting Without Contributing
+
+A wallet might try to mint a receipt without supporting the fundraiser.
+
+The program requires a valid Contributor PDA with an amount greater than zero.
+Otherwise, it returns `NoContribution`.
+
+### Minting Multiple Receipts
+
+A contributor might repeatedly call `mint_receipt`.
+
+After the first successful mint, `receipt_minted` becomes `true`. Another
+attempt returns `ReceiptAlreadyMinted`.
+
+### Selling or Transferring a Receipt
+
+A contributor might transfer the receipt to someone who did not contribute.
+
+The program freezes the receipt token account immediately after minting, making
+the receipt non-transferable.
+
+### Claiming Rewards After a Refund
+
+A contributor might mint a receipt, refund their contribution, and later try to
+claim a reward.
+
+A successful refund closes the Contributor PDA. Future reward instructions must
+require both the receipt and the live Contributor PDA, so a refunded receipt
+cannot qualify.
+
+### Arithmetic Overflow or Underflow
+
+Large or inconsistent values might cause arithmetic to wrap into incorrect
+values.
+
+The program uses checked arithmetic and returns `ArithmeticOverflow` when a
+calculation cannot be completed safely.
+
+### Contributing Less Than One Token
+
+A wallet might contribute a tiny raw token amount.
+
+The program calculates one whole token using the mint's decimal setting and
+returns `ContributionTooSmall` when the amount is below that boundary.
+
+## Tests
+
+The custom feature has three focused tests:
+
+1. A boundary test rejects a contribution below one whole token.
+2. A happy-path test mints one receipt and verifies its decimals, supply,
+   balance, frozen state, and Contributor PDA state.
+3. An abuse test rejects a duplicate receipt with the named
+   `ReceiptAlreadyMinted` error and confirms the supply remains one.
+
+Run the suite with:
+
+```bash
+anchor test
+```
+
+Latest local results:
+
+```text
+13 tests passed
+3 receipt-feature tests passed
+1 legacy Bankrun test failed because its older Solana test environment could
+not load the current program binary
+```
+
+The legacy Bankrun failure is an existing test-environment compatibility issue
+and is unrelated to the backer receipt feature.
