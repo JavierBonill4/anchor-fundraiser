@@ -25,14 +25,19 @@ pub struct Contribute<'info> {
     #[account(
         mut,
         has_one = mint_to_raise,
-        seeds = [b"fundraiser".as_ref(), fundraiser.maker.as_ref()],
+        seeds = [b"fundraiser".as_ref(), fundraiser.maker.as_ref(), &fundraiser.id.to_le_bytes()],
         bump = fundraiser.bump,
     )]
     pub fundraiser: Account<'info, Fundraiser>,
     #[account(
         init_if_needed,
         payer = contributor,
-        seeds = [b"contributor", fundraiser.key().as_ref(), contributor.key().as_ref()],
+        seeds = [
+            b"contributor",
+            fundraiser.key().as_ref(),
+            contributor.key().as_ref(),
+            &fundraiser.time_started.to_le_bytes(),
+        ],
         bump,
         space = ANCHOR_DISCRIMINATOR + Contributor::INIT_SPACE,
     )]

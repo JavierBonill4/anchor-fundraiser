@@ -2,7 +2,9 @@ use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken, 
     token::{
-        transfer, 
+        close_account,
+        transfer,
+        CloseAccount, 
         Mint, 
         Token, 
         TokenAccount, 
@@ -22,7 +24,7 @@ pub struct CheckContributions<'info> {
     pub mint_to_raise: Account<'info, Mint>,
     #[account(
         mut,
-        seeds = [b"fundraiser".as_ref(), maker.key().as_ref()],
+        seeds = [b"fundraiser".as_ref(), maker.key().as_ref(), &fundraiser.id.to_le_bytes()],
         bump = fundraiser.bump,
         close = maker,
     )]
@@ -67,9 +69,11 @@ impl<'info> CheckContributions<'info> {
         };
 
         // Signer seeds to sign the CPI on behalf of the fundraiser account
+        let id_bytes = self.fundraiser.id.to_le_bytes();
         let signer_seeds: [&[&[u8]]; 1] = [&[
             b"fundraiser".as_ref(),
             self.maker.to_account_info().key.as_ref(),
+            id_bytes.as_ref(),
             &[self.fundraiser.bump],
         ]];
 
@@ -78,6 +82,21 @@ impl<'info> CheckContributions<'info> {
 
         // Transfer the funds from the vault to the maker
         transfer(cpi_ctx, self.vault.amount)?;
+
+        // The vault is empty now, and nothing will ever use it again. Close it
+        // so its rent returns to the maker who paid for it — and, more to the
+        // point, so the address is free. `initialize` creates the vault with
+        // `init`, so leaving this account behind is what made a second campaign
+        // for the same maker and mint impossible.
+        close_account(CpiContext::new_with_signer(
+            cpi_program,
+            CloseAccount {
+                account: self.vault.to_account_info(),
+                destination: self.maker.to_account_info(),
+                authority: self.fundraiser.to_account_info(),
+            },
+            &signer_seeds,
+        ))?;
 
         Ok(())
     }

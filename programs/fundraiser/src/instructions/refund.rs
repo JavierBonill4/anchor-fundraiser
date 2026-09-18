@@ -24,13 +24,18 @@ pub struct Refund<'info> {
     #[account(
         mut,
         has_one = mint_to_raise,
-        seeds = [b"fundraiser", maker.key().as_ref()],
+        seeds = [b"fundraiser", maker.key().as_ref(), &fundraiser.id.to_le_bytes()],
         bump = fundraiser.bump,
     )]
     pub fundraiser: Account<'info, Fundraiser>,
     #[account(
         mut,
-        seeds = [b"contributor", fundraiser.key().as_ref(), contributor.key().as_ref()],
+        seeds = [
+            b"contributor",
+            fundraiser.key().as_ref(),
+            contributor.key().as_ref(),
+            &fundraiser.time_started.to_le_bytes(),
+        ],
         bump,
         close = contributor,
     )]
@@ -81,9 +86,11 @@ impl<'info> Refund<'info> {
         };
 
         // Signer seeds to sign the CPI on behalf of the fundraiser account
+        let id_bytes = self.fundraiser.id.to_le_bytes();
         let signer_seeds: [&[&[u8]]; 1] = [&[
             b"fundraiser".as_ref(),
             self.maker.to_account_info().key.as_ref(),
+            id_bytes.as_ref(),
             &[self.fundraiser.bump],
         ]];
 
