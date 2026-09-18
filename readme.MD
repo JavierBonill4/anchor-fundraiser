@@ -726,9 +726,41 @@ both solvency tests red.
 **Refund and claim are two doors to the same tokens.** A settled campaign whose
 vault has been partly drained by claims looks, by balance alone, like a campaign
 under its target. The old `vault.amount < amount_to_raise` refund guard would
-have waved through a refund on money the maker had already been paid. Gating on
-`settled` closes it. This is the guide's own warning about contribute and refund
-being legal at the same moment, one instruction over.
+have waved through a refund on money the maker had already been paid. This is the
+guide's own warning about contribute and refund being legal at the same moment,
+one instruction over.
+
+**Veto a funded raise by refunding out of it.** Fixing the door above by gating
+refunds on `settled` *alone* opened a worse hole, and a review caught it after
+the first version of this branch was pushed. Between the deadline and the maker's
+settlement, both instructions are legal at once. A single bidder on an
+oversubscribed book could refund, drag `current_amount` under the target, and
+leave `check_contributions` failing `TargetNotMet` forever — `settled` is only
+ever set inside that instruction, so there is no way back. Refunding costs an
+oversubscribed bidder nothing, so anyone could veto a fully funded campaign.
+The gate needs both conditions:
+
+```rust
+require!(
+    !self.fundraiser.settled
+        && self.fundraiser.current_amount < self.fundraiser.amount_to_raise,
+    FundraiserError::TargetMet
+);
+```
+
+**Settle against a mint the campaign was not raising.** `check_contributions`
+was the only instruction whose `fundraiser` account lacked `has_one =
+mint_to_raise`, so the maker chose which mint settlement paid from. A made-up
+mint with a pre-funded vault would flip `settled = true` — shutting the real
+refund window — while the real vault never paid out. Every other instruction
+already had the constraint; this one was simply missed.
+
+**The wind-up crank is loss-making for anyone but the maker.** `close_campaign`
+creates `maker_ata` with `init_if_needed, payer = caller`, while both rent
+refunds go to the maker. A third party who cranks it is out of pocket. The
+"anyone will tidy this up" rationale is therefore weaker than it sounds: in
+practice the maker cranks their own campaigns, and the permissionless part
+matters only as a guarantee that the accounts *can* always be reclaimed.
 
 **Bid, then claim twice.** `claim_excess` closes the Contributor account, so the
 second attempt has no account to read.
@@ -756,8 +788,8 @@ know the two numbers are not the same thing and never will be.
 `tests/bookbuild-bankrun.ts`, ten cases: pro-rata fills with the arithmetic
 asserted to the unit, solvency to the last claimer, both sides of the target
 boundary, settlement before the deadline, the two vault-stuffing attacks, double
-claim, refund-after-settlement, and a bid at 90% of target that the old cap
-refused. `tests/lifecycle-bankrun.ts` is updated for the new flow and still
+claim, refund-after-settlement, the refund veto, the substituted mint, and a bid
+at 90% of target that the old cap refused. `tests/lifecycle-bankrun.ts` is updated for the new flow and still
 covers the lifecycle feature underneath.
 
 Each guard was reverted in turn:
@@ -769,12 +801,14 @@ Each guard was reverted in turn:
 | fills round down instead of up | **2 failing** — both solvency cases |
 | settlement allowed before the deadline | **1 failing** — the deadline test |
 | refund gated on the vault balance again | **1 failing** — the double-spend test |
+| refund gated on `!settled` alone | **1 failing** — the veto attack |
+| `has_one = mint_to_raise` dropped from settlement | **1 failing** — the substituted-mint attack |
 
 The whole suite, all five files, runs green against a local validator:
 
 ```
 $ anchor test --validator legacy
-  26 passing (24s)
+  28 passing
 ```
 
 Anchor 1.1.2 defaults to `surfpool` for its local validator

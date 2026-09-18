@@ -24,6 +24,7 @@ pub struct CheckContributions<'info> {
     pub mint_to_raise: Account<'info, Mint>,
     #[account(
         mut,
+        has_one = mint_to_raise,
         seeds = [b"fundraiser".as_ref(), maker.key().as_ref(), &fundraiser.id.to_le_bytes()],
         bump = fundraiser.bump,
     )]

@@ -59,6 +59,20 @@ describe("fundraiser — oversubscription clears pro rata", () => {
     return `${err?.message ?? err} ${JSON.stringify(err?.logs ?? [])}`;
   };
 
+  /**
+   * Anchor's own constraint errors are numbered from 2000 and are not in the
+   * IDL — that only carries the program's own errors, which start at 6000. So a
+   * violated `has_one` arrives as a bare `custom error 2001` unless we name it.
+   * (`anchor-lang-error-1.1.2/src/lib.rs`: `ConstraintMut = 2000`, then
+   * `ConstraintHasOne`.)
+   */
+  const ANCHOR_BUILTIN: Record<number, string> = {
+    2000: "ConstraintMut",
+    2001: "ConstraintHasOne",
+    2006: "ConstraintSeeds",
+    3012: "AccountNotInitialized",
+  };
+
   const errorCodeOf = (err: any): string => {
     const text = textOf(err);
     const byName = text.match(/Error Code: (\w+)/);
@@ -68,7 +82,7 @@ describe("fundraiser — oversubscription clears pro rata", () => {
       const code = parseInt(byNumber[1], 16);
       const known = (program.idl.errors ?? []).find((e: any) => e.code === code);
       if (known) return known.name;
-      return `custom error ${code}`;
+      return ANCHOR_BUILTIN[code] ?? `custom error ${code}`;
     }
     return text.slice(0, 200);
   };
@@ -397,6 +411,70 @@ describe("fundraiser — oversubscription clears pro rata", () => {
     } catch (err) {
       assertErrorIs(err, "TargetMet", "the campaign settled; the route out is claim_excess");
     }
+  });
+
+  it("refuses a refund on an oversubscribed book before the maker has settled", async () => {
+    const { maker, mint, bidders } = await setup(2);
+    const c = await open(maker, mint, 1, 7);
+    for (const b of bidders) await bid(c, b, BID);   // 14,000,000 against a 10,000,000 target
+
+    await advanceDays(8n);
+
+    // The deadline has passed but the maker has not settled yet. If a refund is
+    // legal here, any single bidder can walk out, drop the book under the
+    // target, and `check_contributions` fails TargetNotMet forever — `settled`
+    // is only ever set inside that instruction, so there is no way back. One
+    // participant could veto a fully funded raise.
+    try {
+      await refund(c, bidders[0]);
+      assert.fail("a refund on a book that is over its target must be refused");
+    } catch (err) {
+      assertErrorIs(err, "TargetMet", "the book is over the target, so this raise is going to settle");
+    }
+
+    // And the raise still settles.
+    await settle(c);
+    assert.strictEqual(await tokenBalance(c.makerAta), BigInt(TARGET), "the veto did not land");
+  });
+
+  it("refuses to settle against a mint the campaign was not raising", async () => {
+    const { maker, mint, bidders } = await setup(2);
+    const c = await open(maker, mint, 1, 7);
+    for (const b of bidders) await bid(c, b, BID);
+    await advanceDays(8n);
+
+    // A mint the maker made up, with a vault they pre-funded to the target.
+    const fakeKp = anchor.web3.Keypair.generate();
+    const fake = fakeKp.publicKey;
+    const rent = await context.banksClient.getRent();
+    const fakeVault = getAssociatedTokenAddressSync(fake, c.fundraiser, true);
+    const fakeMakerAta = getAssociatedTokenAddressSync(fake, maker.publicKey);
+    await send([
+      anchor.web3.SystemProgram.createAccount({
+        fromPubkey: payer.publicKey, newAccountPubkey: fake, space: MINT_SIZE,
+        lamports: Number(rent.minimumBalance(BigInt(MINT_SIZE))), programId: TOKEN_PROGRAM_ID,
+      }),
+      createInitializeMint2Instruction(fake, 6, payer.publicKey, null),
+      createAssociatedTokenAccountInstruction(payer.publicKey, fakeVault, c.fundraiser, fake),
+      createMintToInstruction(fake, fakeVault, payer.publicKey, TARGET),
+    ], [fakeKp]);
+
+    // Settling against it would flip `settled` — shutting the real refund window
+    // — while the real vault never pays out.
+    try {
+      await send([await program.methods.checkContributions().accountsPartial({
+        maker: maker.publicKey, mintToRaise: fake, fundraiser: c.fundraiser, vault: fakeVault,
+        makerAta: fakeMakerAta, tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      }).instruction()], [maker]);
+      assert.fail("settlement against a substituted mint must be refused");
+    } catch (err) {
+      assertErrorIs(err, "ConstraintHasOne", "the fundraiser records which mint it is raising");
+    }
+
+    const state = await program.account.fundraiser.fetch(c.fundraiser);
+    assert.isFalse(state.settled, "and the campaign is still unsettled");
   });
 
   it("accepts a bid far above the old 10% cap", async () => {

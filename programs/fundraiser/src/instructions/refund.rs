@@ -69,14 +69,26 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::FundraiserNotEnded
         );
 
-        // Settlement, not the vault balance, is what closes the refund window.
+        // Two conditions, and both are load-bearing.
         //
-        // The old check compared `vault.amount` against the target. Once
+        // `!settled` is the one the vault balance used to stand in for. Once
         // `claim_excess` starts draining the vault, a settled campaign's balance
-        // falls back below the target — and this check would wave through a
-        // refund on money the maker had already been paid. Two routes to the
-        // same tokens is a double spend.
-        require!(!self.fundraiser.settled, FundraiserError::TargetMet);
+        // falls back below the target — and a check against the vault would wave
+        // through a refund on money the maker had already been paid. Two routes
+        // to the same tokens is a double spend.
+        //
+        // `current_amount < amount_to_raise` is the original rule, and dropping
+        // it on its own was a griefing hole. Between the deadline and the
+        // maker's settlement both instructions are otherwise legal at once, so a
+        // single bidder on an oversubscribed book could refund, drag the book
+        // under the target, and leave `check_contributions` failing TargetNotMet
+        // forever — `settled` is only ever set inside that instruction, so there
+        // is no way back. One participant could veto a fully funded raise.
+        require!(
+            !self.fundraiser.settled
+                && self.fundraiser.current_amount < self.fundraiser.amount_to_raise,
+            FundraiserError::TargetMet
+        );
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
