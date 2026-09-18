@@ -63,8 +63,10 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::FundraiserNotEnded
         );
 
+        // current_amount, not vault.amount: checker drains the vault, so after a
+        // successful campaign vault.amount is 0 and would wrongly allow refunds.
         require!(
-            self.vault.amount < self.fundraiser.amount_to_raise,
+            self.fundraiser.current_amount < self.fundraiser.amount_to_raise,
             crate::FundraiserError::TargetMet
         );
 

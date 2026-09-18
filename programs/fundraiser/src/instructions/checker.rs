@@ -23,8 +23,8 @@ pub struct CheckContributions<'info> {
     #[account(
         mut,
         seeds = [b"fundraiser".as_ref(), maker.key().as_ref()],
+        has_one = mint_to_raise,
         bump = fundraiser.bump,
-        close = maker,
     )]
     pub fundraiser: Account<'info, Fundraiser>,
     #[account(
