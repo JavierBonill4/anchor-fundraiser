@@ -490,3 +490,98 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: milestone tracking (25%, 50%, 75%)
+
+Each campaign records which quarter-marks of its target it has crossed in a
+single-byte bitmask stored on the `Fundraiser` account:
+
+```rust
+#[account]
+#[derive(InitSpace)]
+pub struct Fundraiser {
+    ...
+    pub milestones_fired: u8,
+}
+```
+
+Bit `0` = 25%, bit `1` = 50%, bit `2` = 75% of `amount_to_raise`. The mask is
+written (never read) by the contribute flow — the same transaction that moves
+tokens into the vault computes whether any new mark was crossed and flips the
+corresponding bits in one go.
+
+### The contribution flow
+
+```rust
+let quarters = self
+    .fundraiser
+    .current_amount
+    .checked_mul(4)
+    .ok_or(FundraiserError::Overflow)?
+    / self.fundraiser.amount_to_raise;
+
+for i in 0..quarters.min(3) {
+    let flag = 1u8 << (i as u8);
+    if self.fundraiser.milestones_fired & flag == 0 {
+        self.fundraiser.milestones_fired |= flag;
+        emit!(MilestoneReached {
+            fundraiser: self.fundraiser.key(),
+            quarter: i as u8,
+            amount: self.fundraiser.current_amount,
+        });
+    }
+}
+```
+
+We reason in quarters, not fractions: `current_amount * 4 / amount_to_raise`
+is an integer in `{0, 1, 2, 3, 4}`. Multiplying *before* dividing keeps the
+precision (dividing first would read zero until the very end), and the
+multiplication is the only place overflow can occur, so it is checked.
+
+Two properties of this loop are worth spelling out:
+
+- Each bit is only ever set once. The loop computes *where the campaign is now*,
+  not what changed, so a contribution that keeps the total past a mark can never
+  re-fire it. The tests prove this by counting `MilestoneReached` events in the
+  transaction logs.
+- A contribution that jumps past two marks at once fires both events in a single
+  transaction. The 10%-per-contributor cap makes this impossible today, but the
+  loop is written so a wider cap — or a different business rule — stays correct.
+
+### The event
+
+```rust
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub quarter: u8, // 0 = 25%, 1 = 50%, 2 = 75%
+    pub amount: u64,
+}
+```
+
+Events are program logs, not state: they are emitted *alongside* the on-chain
+bitmask, never instead of it. Anything off-chain — a UI, a notifications
+service — can subscribe to `MilestoneReached` and react (send an alert, update a
+progress bar) without polling the vault balance.
+
+### Alternative designs considered
+
+- Compute milestones in the off-chain client instead. Rejected: milestones are a
+  property of the campaign's on-chain history, and any client can drift from or
+  lie about it. The authoritative record belongs in the program.
+- Store a list of milestone amounts (a `Vec`) instead of a bitmask. Rejected:
+  there are exactly three fixed marks, and a bitmask is a single byte of rent
+  cost, whereas a `Vec` costs tens of bytes and lets callers pass arbitrary
+  values.
+- Use the event as the source of truth and skip the bitmask. Rejected: events
+  are logs — they can be missed, and nothing reads the past. State is the only
+  thing a later transaction can count on.
+
+### Known limitations
+
+- **Refunds do not retract a fired milestone.** The mask is deliberately
+  one-way: it answers "has this campaign ever reached X?" not "is it currently
+  at X?". A refund after the deadline moves `current_amount` down but leaves the
+  bits untouched, so a backer can use the mask as a true historical record.
