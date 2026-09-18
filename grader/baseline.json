@@ -1,0 +1,30 @@
+{
+    "_comment": "SEALED. The upstream's on-chain surface, as it ships. grade.py diffs the built IDL against this to answer 'did you add anything'. Names are compared case-insensitively with underscores stripped, so snake_case here matches the camelCase Anchor 1.x emits.",
+    "challenge": "fundraiser-feature",
+    "instructions": ["initialize", "contribute", "check_contributions", "refund"],
+    "accounts": {
+      "fundraiser": [
+        "maker",
+        "mint_to_raise",
+        "amount_to_raise",
+        "current_amount",
+        "time_started",
+        "duration",
+        "bump"
+      ],
+      "contributor": ["amount"]
+    },
+    "errors": [
+      "TargetNotMet",
+      "TargetMet",
+      "ContributionTooBig",
+      "ContributionTooSmall",
+      "MaximumContributionsReached",
+      "FundraiserNotEnded",
+      "FundraiserEnded",
+      "InvalidAmount"
+    ],
+    "test_count": 11,
+    "new_tests_required": 3
+  }
+  
