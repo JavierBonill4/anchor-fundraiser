@@ -11,6 +11,7 @@ import {
 } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
 import { assert, AssertionError } from "chai";
+import { fundraiserPda, contributorPda } from "./pda";
 
 /**
  * Regression tests for the contribution window.
@@ -34,6 +35,7 @@ describe("fundraiser — contribution window", () => {
 
   // Comfortably above MIN_AMOUNT_TO_RAISE, and 1_000_000 is under the 10% per-
   // contributor cap that `contribute` enforces separately.
+  const CAMPAIGN_ID = 1;
   const TARGET = 30_000_000;
   const CONTRIBUTION = 1_000_000;
 
@@ -114,18 +116,11 @@ describe("fundraiser — contribution window", () => {
       10 * CONTRIBUTION
     );
 
-    const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
-      program.programId
-    );
-    const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
-      program.programId
-    );
+    const fundraiser = fundraiserPda(program.programId, maker.publicKey, CAMPAIGN_ID);
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await program.methods
-      .initialize(new anchor.BN(TARGET), durationDays)
+      .initialize(new anchor.BN(CAMPAIGN_ID), new anchor.BN(TARGET), durationDays)
       .accountsPartial({
         maker: maker.publicKey,
         mintToRaise: mint,
@@ -138,6 +133,16 @@ describe("fundraiser — contribution window", () => {
       .signers([maker])
       .rpc()
       .then(confirm);
+
+    // `time_started` is a contributor seed, so this address only exists once the
+    // campaign does.
+    const { timeStarted } = await program.account.fundraiser.fetch(fundraiser);
+    const contributorAccount = contributorPda(
+      program.programId,
+      fundraiser,
+      provider.publicKey,
+      timeStarted
+    );
 
     return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
   };

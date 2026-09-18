@@ -14,6 +14,7 @@ import {
   unpackAccount,
 } from "@solana/spl-token";
 import { assert, AssertionError } from "chai";
+import { fundraiserPda, contributorPda } from "./pda";
 
 /**
  * The other half of the contribution window — the half you cannot reach from
@@ -26,6 +27,7 @@ import { assert, AssertionError } from "chai";
  * "refunds start" testable at all.
  */
 describe("fundraiser — the window closes (bankrun)", () => {
+  const CAMPAIGN_ID = 1;
   const TARGET = 30_000_000;
   const CONTRIBUTION = 1_000_000;
   const DURATION_DAYS = 7;
@@ -171,20 +173,13 @@ describe("fundraiser — the window closes (bankrun)", () => {
     );
 
     // --- open a seven day campaign --------------------------------------
-    const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
-      program.programId
-    );
-    const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
-      program.programId
-    );
+    const fundraiser = fundraiserPda(program.programId, maker.publicKey, CAMPAIGN_ID);
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await send(
       [
         await program.methods
-          .initialize(new anchor.BN(TARGET), DURATION_DAYS)
+          .initialize(new anchor.BN(CAMPAIGN_ID), new anchor.BN(TARGET), DURATION_DAYS)
           .accountsPartial({
             maker: maker.publicKey,
             mintToRaise: mint,
@@ -197,6 +192,16 @@ describe("fundraiser — the window closes (bankrun)", () => {
           .instruction(),
       ],
       [maker]
+    );
+
+    // `time_started` is a contributor seed, so this address only exists once the
+    // campaign does.
+    const { timeStarted } = await program.account.fundraiser.fetch(fundraiser);
+    const contributorAccount = contributorPda(
+      program.programId,
+      fundraiser,
+      payer.publicKey,
+      timeStarted
     );
 
     const contributeIx = () =>

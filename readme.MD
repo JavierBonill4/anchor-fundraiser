@@ -490,3 +490,134 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+# Campaign lifecycle
+
+## What it does
+
+A maker used to get **one campaign per mint, ever**. Not one at a time — one, full
+stop. This feature gives a campaign an id, and makes both of its endings clean up
+after themselves, so a maker can run a second campaign, a third, and so on, and
+gets the rent back each time.
+
+## Why it was needed
+
+The fundraiser PDA was derived from `[b"fundraiser", maker]`, and the vault is the
+associated token account of that PDA. Both endings left something behind:
+
+| Ending | What survived | What the next `initialize` hit |
+|---|---|---|
+| Target met | the vault ATA — `check_contributions` emptied it and closed only the Fundraiser | the ATA program: `Provided owner is not allowed` |
+| Target missed | the Fundraiser *and* the vault — `refund` closes only the Contributor | the System program: `Allocate: account … already in use` |
+
+Both are in `tests/lifecycle-bankrun.ts` as executed tests, not as a description.
+
+## How it works
+
+- **`id: u64` on `Fundraiser`**, appended after `bump`, and added to the seeds:
+  `[b"fundraiser", maker, id.to_le_bytes()]`. Every instruction that signs for the
+  PDA carries it in its signer seeds.
+- **`check_contributions` closes the vault** it has just emptied, by CPI to the
+  token program's `CloseAccount` with the fundraiser PDA as authority, rent to the
+  maker. The Fundraiser is still closed by `close = maker`.
+- **`close_campaign`** is new: a permissionless crank that winds up a campaign
+  which missed its target. It is a crank and not a maker instruction because the
+  maker has no incentive to pay a fee to tidy up a campaign that failed, and the
+  contributors have already taken their money back. Rent goes to the maker who
+  paid it, whoever calls it.
+- **`time_started` is a contributor seed.** `[b"contributor", fundraiser,
+  contributor, time_started]`. This is the non-obvious part, and it is explained
+  under *how you would attack it* below.
+
+Two guards on `close_campaign`, both reachable and both tested:
+
+```rust
+require!(window_has_closed,          FundraiserError::FundraiserNotEnded);
+require!(self.vault.amount == 0,     FundraiserError::VaultNotEmpty);
+```
+
+## What it costs
+
+Measured under `solana-bankrun` (`lamports_per_byte_year` 3480, exemption
+threshold 2 — the same parameters as a live cluster):
+
+| Instruction | Compute units |
+|---|---|
+| `initialize` | 36,195 |
+| `contribute` | 28,319 |
+| `refund` | 25,087 |
+| **`close_campaign`** | **13,013** |
+
+`check_contributions` grew by one `CloseAccount` CPI. `Fundraiser` grew by 8 bytes
+for the id — 98 to 106 — which is 55,680 lamports of extra rent per campaign, and
+that rent now comes back.
+
+What `close_campaign` returns to the maker: **3,667,920 lamports (0.00366792 SOL)**
+— 1,628,640 for the 106-byte Fundraiser plus 2,039,280 for the 165-byte vault ATA.
+Before this change, both were stranded permanently on the failure path.
+
+No new accounts. No new rent. The feature is net negative rent by construction.
+
+## How you would attack it
+
+**Close a campaign while contributors' money is still in the vault.** This is the
+real one. `refund` derives its signer seeds from the Fundraiser account, so if
+`close_campaign` closed the Fundraiser with a non-empty vault, those tokens would
+be unreachable forever — there would be no instruction left able to sign for the
+vault's authority. `require!(self.vault.amount == 0)` is the whole defence, and
+`refuses to wind up a campaign whose contributors have not refunded` is the test
+that holds it in place. Deleting that one line turns exactly that test red and
+leaves the other six green.
+
+**Reuse an id to poison a returning contributor.** Nothing closes a `Contributor`
+on the *success* path — `check_contributions` is signed by the maker, and a
+program cannot enumerate accounts, so it has no way to find them. Those accounts
+outlive their campaign. If contributor seeds were only
+`[b"contributor", fundraiser, person]`, a maker who reused an id would land on the
+same fundraiser address, and therefore the same contributor addresses, and
+`init_if_needed` in `contribute` would hand a returning backer their *old*
+balance: they would be banned by the 10% cumulative cap, and if the second
+campaign failed they would refund both campaigns' money out of the second
+campaign's vault. Adding `time_started` to those seeds separates two campaigns
+that share an id. The residual hole is a maker who closes and reopens the same id
+within the same second; a monotonic per-maker counter would close it properly, at
+the cost of another account.
+
+**The direct-funding bypass, which this feature does not fix and does not
+introduce.** `check_contributions` and `refund` both guard on `vault.amount`,
+never on `current_amount`. The vault is an ordinary ATA, so anyone can transfer
+into it and move the number those guards read, while `current_amount` — which
+nothing on-chain reads — stays where it was. A campaign can therefore pay out
+having recorded zero contributions; `still pays out a vault that never saw a
+contribution` asserts exactly that. It is out of scope here, but it is worth
+knowing that this program's notion of "how much has been raised" has two
+disagreeing answers.
+
+**Griefing the crank.** `close_campaign` is permissionless by design. A caller
+gains nothing and pays the fee; the rent goes to the maker. There is nothing to
+race for.
+
+## What is left undone
+
+Contributor accounts from a *successful* campaign are still stranded. Reclaiming
+them needs a fourth instruction — a per-contributor crank, since nothing on-chain
+can enumerate them — and this is meant to be one feature. With `time_started` in
+the seeds they are now inert rather than dangerous, which is the difference
+between a leak and a bug.
+
+## Testing
+
+`tests/lifecycle-bankrun.ts`, six cases: the two happy paths, the boundary at the
+deadline (day 6 refused, day 7 accepted), the abuse case above, the id-reuse case,
+and the unchanged direct-funding behaviour. Bankrun rather than a validator
+because three of them need the clock moved.
+
+Each piece of the feature was reverted in turn and the suite re-run:
+
+| Reverted | Result |
+|---|---|
+| the `CloseAccount` CPI in `check_contributions` | 2 failing, 5 passing |
+| `require!(vault.amount == 0)` | **1 failing**, 6 passing — the abuse case |
+| `time_started` from the contributor seeds (program and client) | **1 failing**, 6 passing — the id-reuse case |

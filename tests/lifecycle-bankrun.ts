@@ -2,7 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
 import { startAnchor, BankrunProvider } from "anchor-bankrun";
-import { ProgramTestContext } from "solana-bankrun";
+import { Clock, ProgramTestContext } from "solana-bankrun";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   MINT_SIZE,
@@ -14,41 +14,39 @@ import {
   unpackAccount,
 } from "@solana/spl-token";
 import { assert, AssertionError } from "chai";
+import { fundraiserPda, contributorPda } from "./pda";
 
 /**
- * What happens to a campaign AFTER it settles.
+ * Campaign lifecycle.
  *
- * The guide describes the fundraiser seeds as "one per maker — a maker runs one
- * campaign at a time". These tests ask whether "at a time" is true:
+ * Before this feature a maker got one campaign per mint, ever. On the success
+ * path `check_contributions` closed the Fundraiser but left the vault ATA
+ * standing, and `initialize` creates the vault with `init`; on the failure path
+ * nothing closed either account. Both made the second `initialize` fail on an
+ * address that was already occupied.
  *
- *   - success: `check_contributions` closes the Fundraiser (`close = maker`) but
- *     nothing closes the vault ATA, and `initialize` creates the vault with
- *     `init`, not `init_if_needed`.
- *   - failure: `refund` closes the Contributor and nothing else, so the
- *     Fundraiser itself survives.
+ * Now the fundraiser seeds carry an id, `check_contributions` closes the vault
+ * it just emptied, and `close_campaign` is a permissionless crank that winds up
+ * a campaign that missed its target.
  *
- * Neither is covered by the shipped suite, which never opens a second campaign
- * for the same maker.
- *
- * The first test is a different claim: both terminal guards read `vault.amount`
- * and never `current_amount`, so a vault funded without going through
- * `contribute` still pays out.
- *
- * Bankrun rather than a validator, so this needs no wallet and no airdrop.
+ * Bankrun rather than a validator: it needs no wallet, and it can move the clock.
  */
-describe("fundraiser — lifecycle after settlement (bankrun)", () => {
-  const TARGET = 30_000_000; // 30 tokens at 6 decimals, over MIN_AMOUNT_TO_RAISE
+describe("fundraiser — campaign lifecycle", () => {
+  const TARGET = 30_000_000; // 30 tokens at 6 decimals
+  const CONTRIBUTION = 3_000_000; // exactly the 10% per-contributor cap
+  const DAY = 86_400n;
+  const SLOTS_PER_DAY = 216_000n;
 
   let context: ProgramTestContext;
   let program: Program<Fundraiser>;
   let payer: anchor.web3.Keypair;
 
-  before(async () => {
+  // A fresh bank per test, so one test's clock warp cannot reach another.
+  beforeEach(async () => {
     context = await startAnchor("", [], []);
     const provider = new BankrunProvider(context);
     anchor.setProvider(provider);
-    const idl = require("../target/idl/fundraiser.json");
-    program = new anchor.Program<Fundraiser>(idl, provider);
+    program = new anchor.Program<Fundraiser>(require("../target/idl/fundraiser.json"), provider);
     payer = context.payer;
   });
 
@@ -70,22 +68,52 @@ describe("fundraiser — lifecycle after settlement (bankrun)", () => {
     return `${err?.message ?? err} ${JSON.stringify(err?.logs ?? [])}`;
   };
 
-  /**
-   * A rejection has to be the rejection we are testing for.
-   *
-   * The dangerous false positive here is transaction dedup: the second
-   * `initialize` is byte-identical to the first, so on an unchanged blockhash the
-   * bank would refuse it as already-processed and the assertion would pass for
-   * entirely the wrong reason.
-   */
-  const assertRefusedWith = (err: any, expected: RegExp, why: string) => {
+  /** The Anchor error name behind a bankrun rejection, which arrives as a string. */
+  const errorCodeOf = (err: any): string => {
     const text = textOf(err);
+    const byName = text.match(/Error Code: (\w+)/);
+    if (byName) return byName[1];
+    const byNumber = text.match(/custom program error: (0x[0-9a-fA-F]+)/);
+    if (byNumber) {
+      const code = parseInt(byNumber[1], 16);
+      const known = (program.idl.errors ?? []).find((e: any) => e.code === code);
+      if (known) return known.name;
+      return `custom error ${code}`;
+    }
+    return text.slice(0, 300);
+  };
+
+  const assertErrorIs = (err: any, expected: string, why: string) => {
+    const text = textOf(err);
+    // A byte-identical transaction on an unchanged blockhash is refused as a
+    // duplicate, which would make any of these assertions pass for the wrong
+    // reason.
     assert.notMatch(
       text,
       /already processed|AlreadyProcessed|blockhash not found/i,
-      `${why} — but the bank refused it as a duplicate transaction, not on its merits: ${text.slice(0, 300)}`
+      `${why} — but the bank refused it as a duplicate, not on its merits: ${text.slice(0, 200)}`
     );
-    assert.match(text, expected, `${why} (got: ${text.slice(0, 300)})`);
+    const actual = errorCodeOf(err);
+    assert.strictEqual(
+      actual.toLowerCase(),
+      expected.toLowerCase(),
+      `${why} (expected ${expected}, got ${actual})`
+    );
+  };
+
+  const advanceDays = async (days: bigint) => {
+    const before = await context.banksClient.getClock();
+    context.warpToSlot(before.slot + days * SLOTS_PER_DAY);
+    const clock = await context.banksClient.getClock();
+    context.setClock(
+      new Clock(
+        clock.slot,
+        clock.epochStartTimestamp,
+        clock.epoch,
+        clock.leaderScheduleEpoch,
+        before.unixTimestamp + days * DAY
+      )
+    );
   };
 
   const tokenBalance = async (address: anchor.web3.PublicKey): Promise<bigint> => {
@@ -98,27 +126,17 @@ describe("fundraiser — lifecycle after settlement (bankrun)", () => {
     } as any).amount;
   };
 
-  const addresses = (maker: anchor.web3.PublicKey, mint: anchor.web3.PublicKey) => {
-    const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("fundraiser"), maker.toBuffer()],
-      program.programId
-    );
-    return {
-      fundraiser,
-      vault: getAssociatedTokenAddressSync(mint, fundraiser, true),
-      makerAta: getAssociatedTokenAddressSync(mint, maker),
-    };
-  };
+  const lamports = async (address: anchor.web3.PublicKey): Promise<bigint> =>
+    BigInt((await context.banksClient.getAccount(address))?.lamports ?? 0);
 
-  /** A funded maker and a fresh 6-decimal mint the bankrun payer controls. */
+  /** A funded maker, a fresh 6-decimal mint, and a contributor ATA with tokens. */
   const freshMakerAndMint = async () => {
     const maker = anchor.web3.Keypair.generate();
     const mintKeypair = anchor.web3.Keypair.generate();
     const mint = mintKeypair.publicKey;
+    const contributorAta = getAssociatedTokenAddressSync(mint, payer.publicKey);
 
     const rent = await context.banksClient.getRent();
-    const mintRent = Number(rent.minimumBalance(BigInt(MINT_SIZE)));
-
     await send(
       [
         anchor.web3.SystemProgram.transfer({
@@ -130,156 +148,319 @@ describe("fundraiser — lifecycle after settlement (bankrun)", () => {
           fromPubkey: payer.publicKey,
           newAccountPubkey: mint,
           space: MINT_SIZE,
-          lamports: mintRent,
+          lamports: Number(rent.minimumBalance(BigInt(MINT_SIZE))),
           programId: TOKEN_PROGRAM_ID,
         }),
         createInitializeMint2Instruction(mint, 6, payer.publicKey, null),
+        createAssociatedTokenAccountInstruction(payer.publicKey, contributorAta, payer.publicKey, mint),
+        createMintToInstruction(mint, contributorAta, payer.publicKey, 10 * TARGET),
       ],
       [mintKeypair]
     );
-
-    return { maker, mint };
+    return { maker, mint, contributorAta };
   };
 
-  const initializeIx = (
+  type Campaign = {
+    maker: anchor.web3.Keypair;
+    mint: anchor.web3.PublicKey;
+    id: number;
+    fundraiser: anchor.web3.PublicKey;
+    vault: anchor.web3.PublicKey;
+    makerAta: anchor.web3.PublicKey;
+    contributorAta: anchor.web3.PublicKey;
+    contributorAccount: anchor.web3.PublicKey;
+  };
+
+  const openCampaign = async (
     maker: anchor.web3.Keypair,
     mint: anchor.web3.PublicKey,
+    contributorAta: anchor.web3.PublicKey,
+    id: number,
     durationDays: number
-  ) => {
-    const { fundraiser, vault } = addresses(maker.publicKey, mint);
-    return program.methods
-      .initialize(new anchor.BN(TARGET), durationDays)
-      .accountsPartial({
-        maker: maker.publicKey,
-        mintToRaise: mint,
-        fundraiser,
-        vault,
-        systemProgram: anchor.web3.SystemProgram.programId,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      })
-      .instruction();
+  ): Promise<Campaign> => {
+    const fundraiser = fundraiserPda(program.programId, maker.publicKey, id);
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    await send(
+      [
+        await program.methods
+          .initialize(new anchor.BN(id), new anchor.BN(TARGET), durationDays)
+          .accountsPartial({
+            maker: maker.publicKey,
+            mintToRaise: mint,
+            fundraiser,
+            vault,
+            systemProgram: anchor.web3.SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          })
+          .instruction(),
+      ],
+      [maker]
+    );
+
+    const { timeStarted } = await program.account.fundraiser.fetch(fundraiser);
+    return {
+      maker,
+      mint,
+      id,
+      fundraiser,
+      vault,
+      makerAta: getAssociatedTokenAddressSync(mint, maker.publicKey),
+      contributorAta,
+      contributorAccount: contributorPda(program.programId, fundraiser, payer.publicKey, timeStarted),
+    };
   };
 
-  const checkContributionsIx = (
-    maker: anchor.web3.Keypair,
-    mint: anchor.web3.PublicKey
-  ) => {
-    const { fundraiser, vault, makerAta } = addresses(maker.publicKey, mint);
-    return program.methods
+  const contributeIx = (c: Campaign, amount: number) =>
+    program.methods
+      .contribute(new anchor.BN(amount))
+      .accountsPartial({
+        contributor: payer.publicKey,
+        mintToRaise: c.mint,
+        fundraiser: c.fundraiser,
+        contributorAccount: c.contributorAccount,
+        contributorAta: c.contributorAta,
+        vault: c.vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+
+  const refundIx = (c: Campaign) =>
+    program.methods
+      .refund()
+      .accountsPartial({
+        contributor: payer.publicKey,
+        maker: c.maker.publicKey,
+        mintToRaise: c.mint,
+        fundraiser: c.fundraiser,
+        contributorAccount: c.contributorAccount,
+        contributorAta: c.contributorAta,
+        vault: c.vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+
+  const checkContributionsIx = (c: Campaign) =>
+    program.methods
       .checkContributions()
       .accountsPartial({
-        maker: maker.publicKey,
-        mintToRaise: mint,
-        fundraiser,
-        vault,
-        makerAta,
+        maker: c.maker.publicKey,
+        mintToRaise: c.mint,
+        fundraiser: c.fundraiser,
+        vault: c.vault,
+        makerAta: c.makerAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
       .instruction();
-  };
 
-  /** Fund the vault to the target without going through `contribute`. */
-  const fundVaultDirectly = async (vault: anchor.web3.PublicKey, mint: anchor.web3.PublicKey) =>
-    send([createMintToInstruction(mint, vault, payer.publicKey, TARGET)]);
+  /** Note the caller: a third party, not the maker and not a contributor. */
+  const closeCampaignIx = (c: Campaign, caller: anchor.web3.PublicKey) =>
+    program.methods
+      .closeCampaign()
+      .accountsPartial({
+        caller,
+        maker: c.maker.publicKey,
+        mintToRaise: c.mint,
+        fundraiser: c.fundraiser,
+        vault: c.vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .instruction();
 
-  /** New slot, so a resend is a genuinely new transaction rather than a duplicate. */
-  const nextSlot = async () => {
-    const clock = await context.banksClient.getClock();
-    context.warpToSlot(clock.slot + 10n);
-  };
+  /** Top the vault up to the target without going through `contribute`. */
+  const topUpVault = (c: Campaign, amount: number) =>
+    send([createMintToInstruction(c.mint, c.vault, payer.publicKey, amount)]);
 
-  it("pays out a vault that never saw a contribution, with current_amount at 0", async () => {
-    const { maker, mint } = await freshMakerAndMint();
-    const { fundraiser, vault, makerAta } = addresses(maker.publicKey, mint);
+  // ------------------------------------------------------------------
+  // The happy paths: a campaign can now be followed by another
+  // ------------------------------------------------------------------
 
-    await send([await initializeIx(maker, mint, 7)], [maker]);
-    await fundVaultDirectly(vault, mint);
+  it("closes the vault on success, so the maker can run another campaign", async () => {
+    const { maker, mint, contributorAta } = await freshMakerAndMint();
+    const first = await openCampaign(maker, mint, contributorAta, 1, 7);
 
-    const state = await program.account.fundraiser.fetch(fundraiser);
+    await topUpVault(first, TARGET);
+    await send([await checkContributionsIx(first)], [maker]);
+
+    assert.isNull(
+      await context.banksClient.getAccount(first.fundraiser),
+      "the fundraiser should be closed"
+    );
+    assert.isNull(
+      await context.banksClient.getAccount(first.vault),
+      "the vault should be closed too — this is the whole feature"
+    );
+
+    // A second campaign, same maker, same mint, different id.
+    const second = await openCampaign(maker, mint, contributorAta, 2, 7);
+    assert.isNotNull(
+      await context.banksClient.getAccount(second.fundraiser),
+      "a second campaign for the same maker and mint must now be possible"
+    );
+    assert.notStrictEqual(
+      first.fundraiser.toBase58(),
+      second.fundraiser.toBase58(),
+      "the id must put the two campaigns at different addresses"
+    );
+  });
+
+  it("winds up a failed campaign from a third party, and returns the rent to the maker", async () => {
+    const { maker, mint, contributorAta } = await freshMakerAndMint();
+    const c = await openCampaign(maker, mint, contributorAta, 1, 7);
+
+    await send([await contributeIx(c, CONTRIBUTION)]);
+    await advanceDays(8n);
+    await send([await refundIx(c)]);
+    assert.strictEqual(await tokenBalance(c.vault), 0n, "the contributor took their money back");
+
+    const before = await lamports(maker.publicKey);
+
+    // The caller is the bankrun payer: not the maker, not a contributor.
+    await send([await closeCampaignIx(c, payer.publicKey)]);
+
+    assert.isNull(await context.banksClient.getAccount(c.fundraiser), "fundraiser closed");
+    assert.isNull(await context.banksClient.getAccount(c.vault), "vault closed");
+    assert.isAbove(
+      Number(await lamports(maker.publicKey)) - Number(before),
+      0,
+      "the rent goes to the maker who paid it, not to the caller who cranked it"
+    );
+
+    const again = await openCampaign(maker, mint, contributorAta, 2, 7);
+    assert.isNotNull(
+      await context.banksClient.getAccount(again.fundraiser),
+      "and the maker can start over"
+    );
+  });
+
+  // ------------------------------------------------------------------
+  // The boundary: one day either side of the deadline
+  // ------------------------------------------------------------------
+
+  it("refuses to wind up a campaign whose window is still open", async () => {
+    const { maker, mint, contributorAta } = await freshMakerAndMint();
+    const c = await openCampaign(maker, mint, contributorAta, 1, 7);
+
+    // Day 6 of 7: still open, even though the vault is empty.
+    await advanceDays(6n);
+    try {
+      await send([await closeCampaignIx(c, payer.publicKey)]);
+      assert.fail("close_campaign on day 6 of a 7 day campaign must be refused");
+    } catch (err) {
+      assertErrorIs(err, "FundraiserNotEnded", "the window has not closed yet");
+    }
+
+    // Day 7: the deadline itself is the first legal moment.
+    await advanceDays(1n);
+    try {
+      await send([await closeCampaignIx(c, payer.publicKey)]);
+    } catch (err) {
+      assert.fail(`close_campaign on day 7 must be accepted, got ${errorCodeOf(err)}`);
+    }
+    assert.isNull(await context.banksClient.getAccount(c.fundraiser), "fundraiser closed on day 7");
+  });
+
+  // ------------------------------------------------------------------
+  // The abuse case: the check the whole instruction hangs on
+  // ------------------------------------------------------------------
+
+  it("refuses to wind up a campaign whose contributors have not refunded", async () => {
+    const { maker, mint, contributorAta } = await freshMakerAndMint();
+    const c = await openCampaign(maker, mint, contributorAta, 1, 7);
+
+    await send([await contributeIx(c, CONTRIBUTION)]);
+    await advanceDays(8n);
+
+    // The window has closed and the target was missed, so the only thing
+    // standing between the caller and the contributor's money is the vault
+    // balance check. Closing here would leave those tokens with no instruction
+    // able to sign for their authority, ever.
+    try {
+      await send([await closeCampaignIx(c, payer.publicKey)]);
+      assert.fail("close_campaign with tokens still in the vault must be refused");
+    } catch (err) {
+      assertErrorIs(err, "VaultNotEmpty", "the contributor has not refunded yet");
+    }
+
+    assert.strictEqual(
+      await tokenBalance(c.vault),
+      BigInt(CONTRIBUTION),
+      "the contributor's money is untouched"
+    );
+    assert.isNotNull(
+      await context.banksClient.getAccount(c.fundraiser),
+      "and the account they need in order to refund is still there"
+    );
+
+    // Which they then do, and only then can the campaign be wound up.
+    await send([await refundIx(c)]);
+    await send([await closeCampaignIx(c, payer.publicKey)]);
+    assert.isNull(await context.banksClient.getAccount(c.fundraiser), "wound up once it is empty");
+  });
+
+  // ------------------------------------------------------------------
+  // Why `time_started` is a contributor seed
+  // ------------------------------------------------------------------
+
+  it("gives a returning contributor a fresh account when a maker reuses an id", async () => {
+    const { maker, mint, contributorAta } = await freshMakerAndMint();
+
+    const first = await openCampaign(maker, mint, contributorAta, 7, 7);
+    await send([await contributeIx(first, CONTRIBUTION)]);
+    await topUpVault(first, TARGET - CONTRIBUTION);
+    await send([await checkContributionsIx(first)], [maker]);
+
+    // Nothing closes a Contributor on the success path, so this one is stranded.
+    assert.isNotNull(
+      await context.banksClient.getAccount(first.contributorAccount),
+      "the Contributor from a successful campaign is still on chain"
+    );
+
+    // One second later, the same maker reuses id 7.
+    await advanceDays(1n);
+    const second = await openCampaign(maker, mint, contributorAta, 7, 7);
+    assert.notStrictEqual(
+      first.contributorAccount.toBase58(),
+      second.contributorAccount.toBase58(),
+      "time_started must keep the two campaigns' contributor accounts apart"
+    );
+
+    await send([await contributeIx(second, CONTRIBUTION)]);
+    const fresh = await program.account.contributor.fetch(second.contributorAccount);
+    assert.strictEqual(
+      fresh.amount.toString(),
+      String(CONTRIBUTION),
+      "the returning contributor starts from zero, not from the stranded balance"
+    );
+  });
+
+  // ------------------------------------------------------------------
+  // Unchanged, and still worth asserting
+  // ------------------------------------------------------------------
+
+  it("still pays out a vault that never saw a contribution, with current_amount at 0", async () => {
+    const { maker, mint, contributorAta } = await freshMakerAndMint();
+    const c = await openCampaign(maker, mint, contributorAta, 1, 7);
+
+    await topUpVault(c, TARGET);
+
+    const state = await program.account.fundraiser.fetch(c.fundraiser);
     assert.strictEqual(
       state.currentAmount.toString(),
       "0",
-      "nothing went through contribute, so the program's own counter must read 0"
+      "nothing went through contribute, so the program's own counter reads 0"
     );
+
+    await send([await checkContributionsIx(c)], [maker]);
     assert.strictEqual(
-      await tokenBalance(vault),
+      await tokenBalance(c.makerAta),
       BigInt(TARGET),
-      "the vault is nonetheless at target"
+      "the guards read vault.amount, so a directly funded vault still pays out"
     );
-
-    // check_contributions guards on vault.amount, not on current_amount.
-    await send([await checkContributionsIx(maker, mint)], [maker]);
-
-    assert.strictEqual(
-      await tokenBalance(makerAta),
-      BigInt(TARGET),
-      "the maker was paid the full target on a campaign with zero recorded contributions"
-    );
-  });
-
-  it("refuses a second campaign for the same maker and mint after SUCCESS", async () => {
-    const { maker, mint } = await freshMakerAndMint();
-    const { fundraiser, vault } = addresses(maker.publicKey, mint);
-
-    await send([await initializeIx(maker, mint, 7)], [maker]);
-    await fundVaultDirectly(vault, mint);
-    await send([await checkContributionsIx(maker, mint)], [maker]);
-
-    assert.isNull(
-      await context.banksClient.getAccount(fundraiser),
-      "check_contributions should have closed the fundraiser account"
-    );
-    assert.isNotNull(
-      await context.banksClient.getAccount(vault),
-      "the vault ATA survives settlement — nothing closes it"
-    );
-
-    await nextSlot();
-    try {
-      await send([await initializeIx(maker, mint, 7)], [maker]);
-      assert.fail(
-        "a second campaign for the same maker and mint was accepted — the vault ATA must have been closed after all"
-      );
-    } catch (err) {
-      // The fundraiser PDA was freed by `close = maker`, so Anchor re-creates it
-      // without complaint; the refusal comes one account later, from the
-      // Associated Token Account program, because the vault is still there.
-      assertRefusedWith(
-        err,
-        /Provided owner is not allowed/i,
-        "expected the second initialize to be refused by the ATA program because the vault survived settlement"
-      );
-    }
-  });
-
-  it("refuses a second campaign for the same maker and mint after FAILURE", async () => {
-    const { maker, mint } = await freshMakerAndMint();
-    const { fundraiser } = addresses(maker.publicKey, mint);
-
-    // duration 0 closes the window the moment it opens: no contribution is
-    // possible, and no instruction exists that closes the Fundraiser.
-    await send([await initializeIx(maker, mint, 0)], [maker]);
-
-    assert.isNotNull(
-      await context.banksClient.getAccount(fundraiser),
-      "nothing on the failure path closes the fundraiser account"
-    );
-
-    await nextSlot();
-    try {
-      await send([await initializeIx(maker, mint, 7)], [maker]);
-      assert.fail("a second campaign was accepted after a dead one — the fundraiser must persist");
-    } catch (err) {
-      // Nothing closed the fundraiser, so the refusal comes from the System
-      // program at the very first account Anchor tries to allocate.
-      assertRefusedWith(
-        err,
-        /custom program error: 0x0/i,
-        "expected the second initialize to be refused by the System program because the fundraiser PDA already exists"
-      );
-    }
   });
 });
