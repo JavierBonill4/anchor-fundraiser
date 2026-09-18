@@ -15,8 +15,26 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+# Checked by the #[program] and #[derive(Accounts)] macros; declared so rustc
+# does not warn about unknown cfg values.
+anchor-debug = []
+custom-heap = []
+custom-panic = []
 
 [dependencies]
 # Pinned exactly so every student's crate matches the CLI the course uses.
 anchor-lang = { version = "=1.1.2", features = ["init-if-needed"] }
 anchor-spl = "=1.1.2"
+
+[dev-dependencies]
+litesvm = "0.16.0"
+litesvm-token = "0.16.0"
+solana-keypair = "3"
+solana-message = "4"
+solana-signer = "3"
+solana-transaction = "4"
+
+# target_os = "solana" only exists for on-chain builds; declared so host builds
+# (cargo test, IDL generation) do not warn about it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
