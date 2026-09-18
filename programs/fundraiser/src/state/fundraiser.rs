@@ -10,4 +10,7 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    /// Distinguishes one campaign from the next for the same maker. Appended,
+    /// not inserted, so the layout of every field above is unchanged.
+    pub id: u64,
 }
