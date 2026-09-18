@@ -10,4 +10,6 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub beneficiary: Pubkey,
+    pub maker_fee_bps: u16,
 }

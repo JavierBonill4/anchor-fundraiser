@@ -1,5 +1,5 @@
-import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
+import * as anchor from "@anchor-lang/core";
+import { Program } from "@anchor-lang/core";
 import { Fundraiser } from "../target/types/fundraiser";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -9,7 +9,7 @@ import {
   getOrCreateAssociatedTokenAccount,
   mintTo,
 } from "@solana/spl-token";
-import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
+import NodeWallet from "@anchor-lang/core/dist/cjs/nodewallet";
 import { assert, AssertionError } from "chai";
 
 /**
@@ -64,7 +64,7 @@ describe("fundraiser — contribution window", () => {
     assert.strictEqual(
       actual.toLowerCase(),
       expected.toLowerCase(),
-      `${why} (expected ${expected}, got ${actual})`
+      `${why} (expected ${expected}, got ${actual})`,
     );
   };
 
@@ -93,7 +93,7 @@ describe("fundraiser — contribution window", () => {
       wallet.payer,
       provider.publicKey,
       provider.publicKey,
-      6
+      6,
     );
 
     const contributorAta = (
@@ -101,7 +101,7 @@ describe("fundraiser — contribution window", () => {
         provider.connection,
         wallet.payer,
         mint,
-        wallet.publicKey
+        wallet.publicKey,
       )
     ).address;
 
@@ -111,23 +111,30 @@ describe("fundraiser — contribution window", () => {
       mint,
       contributorAta,
       provider.publicKey,
-      10 * CONTRIBUTION
+      10 * CONTRIBUTION,
     );
 
     const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
-      program.programId
+      program.programId,
     );
     const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
-      program.programId
+      [
+        Buffer.from("contributor"),
+        fundraiser.toBuffer(),
+        provider.publicKey.toBuffer(),
+      ],
+      program.programId,
     );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await program.methods
-      .initialize(new anchor.BN(TARGET), durationDays)
+      .initialize(new anchor.BN(TARGET), durationDays, 0)
       .accountsPartial({
         maker: maker.publicKey,
+        // The window tests are unrelated to payout splitting. The provider is
+        // an existing SystemAccount and is distinct from the generated maker.
+        beneficiary: provider.publicKey,
         mintToRaise: mint,
         fundraiser,
         vault,
@@ -139,7 +146,14 @@ describe("fundraiser — contribution window", () => {
       .rpc()
       .then(confirm);
 
-    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
+    return {
+      maker,
+      mint,
+      fundraiser,
+      vault,
+      contributorAccount,
+      contributorAta,
+    };
   };
 
   const contribute = (c: Campaign, amount: number) =>
@@ -185,19 +199,27 @@ describe("fundraiser — contribution window", () => {
     } catch (err) {
       assert.fail(
         `a contribution on day 0 of a 7 day fundraiser must be accepted, ` +
-          `but it was rejected with ${errorCodeOf(err)}`
+          `but it was rejected with ${errorCodeOf(err)}`,
       );
     }
 
     // Assert on state, not on the call returning. The money has to have moved.
-    const vault = await provider.connection.getTokenAccountBalance(campaign.vault);
-    assert.strictEqual(vault.value.amount, String(CONTRIBUTION), "vault should hold the contribution");
+    const vault = await provider.connection.getTokenAccountBalance(
+      campaign.vault,
+    );
+    assert.strictEqual(
+      vault.value.amount,
+      String(CONTRIBUTION),
+      "vault should hold the contribution",
+    );
 
-    const fundraiser = await program.account.fundraiser.fetch(campaign.fundraiser);
+    const fundraiser = await program.account.fundraiser.fetch(
+      campaign.fundraiser,
+    );
     assert.strictEqual(
       fundraiser.currentAmount.toString(),
       String(CONTRIBUTION),
-      "current_amount should track the contribution"
+      "current_amount should track the contribution",
     );
   });
 
@@ -210,7 +232,7 @@ describe("fundraiser — contribution window", () => {
     } catch (err) {
       assert.fail(
         `could not set up this test: the contribution was rejected with ` +
-          `${errorCodeOf(err)}. Fix the contribution window first.`
+          `${errorCodeOf(err)}. Fix the contribution window first.`,
       );
     }
 
@@ -218,13 +240,22 @@ describe("fundraiser — contribution window", () => {
       await refund(campaign);
       assert.fail("a refund on day 0 of a 7 day fundraiser must be refused");
     } catch (err) {
-      assertErrorIs(err, "FundraiserNotEnded",
-        "the refund should be refused because the window has not closed");
+      assertErrorIs(
+        err,
+        "FundraiserNotEnded",
+        "the refund should be refused because the window has not closed",
+      );
     }
 
     // And nothing moved.
-    const vault = await provider.connection.getTokenAccountBalance(campaign.vault);
-    assert.strictEqual(vault.value.amount, String(CONTRIBUTION), "vault must be untouched");
+    const vault = await provider.connection.getTokenAccountBalance(
+      campaign.vault,
+    );
+    assert.strictEqual(
+      vault.value.amount,
+      String(CONTRIBUTION),
+      "vault must be untouched",
+    );
   });
 
   // ------------------------------------------------------------------
@@ -239,11 +270,20 @@ describe("fundraiser — contribution window", () => {
       await contribute(campaign, CONTRIBUTION);
       assert.fail("a contribution to a zero day fundraiser must be refused");
     } catch (err) {
-      assertErrorIs(err, "FundraiserEnded",
-        "the contribution should be refused because the window has closed");
+      assertErrorIs(
+        err,
+        "FundraiserEnded",
+        "the contribution should be refused because the window has closed",
+      );
     }
 
-    const vault = await provider.connection.getTokenAccountBalance(campaign.vault);
-    assert.strictEqual(vault.value.amount, "0", "nothing should have reached the vault");
+    const vault = await provider.connection.getTokenAccountBalance(
+      campaign.vault,
+    );
+    assert.strictEqual(
+      vault.value.amount,
+      "0",
+      "nothing should have reached the vault",
+    );
   });
 });
