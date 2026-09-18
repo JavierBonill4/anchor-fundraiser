@@ -621,3 +621,150 @@ Each piece of the feature was reverted in turn and the suite re-run:
 | the `CloseAccount` CPI in `check_contributions` | 2 failing, 5 passing |
 | `require!(vault.amount == 0)` | **1 failing**, 6 passing — the abuse case |
 | `time_started` from the contributor seeds (program and client) | **1 failing**, 6 passing — the id-reuse case |
+
+---
+
+# Oversubscription: the raise clears like a book build
+
+Built on top of the campaign lifecycle above, and it needs it — the tail this
+feature creates is exactly what `close_campaign` winds up.
+
+## What it does
+
+A contribution is a **bid**, not a purchase. There is no per-contributor cap:
+bid what you like. When the window shuts, if the book is at or over the target,
+every bidder is filled in proportion and takes the rest back.
+
+```
+filled_i = ceil(amount_to_raise * bid_i / settled_total)
+excess_i = bid_i - filled_i
+```
+
+The maker is paid **exactly the target**, never the vault. Undersubscribed, and
+everything refunds as before.
+
+## Why
+
+The program used to refuse money three ways: under one token, over 10% of target
+in a single contribution, over 10% cumulative. The two caps existed to stop one
+whale owning a raise, and they paid for it by rejecting the most valuable thing a
+fundraiser ever receives — demand.
+
+Pro-rata settlement gets the same protection for nothing. A bid of any size is
+diluted by everyone else's, and splitting a bid across a hundred wallets changes
+the outcome not at all, so there is no sybil to defend against either. It also
+removes the race: under a first-come cap, a popular campaign is a scramble to be
+one of the first ten contributors. This is the reasoning behind
+[Meteora's Alpha Vault](https://docs.meteora.ag/anti-sniper-suite/alpha-vault/what-is-alpha-vault)
+pro-rata mode, and it applies unchanged here.
+
+And the ratio is now a public number. Before, a campaign that scraped to its
+target and one with five times that chasing it were indistinguishable on chain.
+`settled_total / amount_to_raise` is revealed demand — which, with campaign ids
+from the previous feature, is exactly what tells a maker how to size the next
+one. The crowd sets the ceiling instead of the founder guessing it.
+
+## How it works
+
+- `contribute` drops both 10% caps. The one-whole-token minimum stays; it is
+  anti-dust, not anti-whale.
+- `check_contributions` now requires the **window to have shut** before it will
+  settle. Without that a maker could settle the moment bids crossed the target,
+  which puts the race straight back — whoever triggers settlement freezes out
+  every later bid and fixes the fill ratio in their own favour.
+- Settlement pays the maker `amount_to_raise`, snapshots `settled_total =
+  current_amount`, sets `settled = true`, and **closes nothing**. The vault still
+  owes the oversubscribed their excess; the fundraiser holds the numbers needed
+  to work out how much.
+- `claim_excess` is new. It pays out `excess_i`, decrements `current_amount` by
+  the whole bid, and closes the Contributor account.
+- `close_campaign` now serves both endings. Its guard moved from
+  `vault.amount == 0` to `current_amount == 0` — the book, not the vault — and it
+  sweeps whatever dust is left before closing.
+- `refund` is gated on `!settled` rather than on the vault balance.
+
+## What it costs
+
+| Instruction | Compute units |
+|---|---|
+| `initialize` | 34,856 |
+| `contribute` (a bid) | 25,429 |
+| `check_contributions` | 43,565 |
+| **`claim_excess`** | **22,174** |
+| `close_campaign` | 17,416 |
+
+Two fields on `Fundraiser` (`settled: bool`, `settled_total: u64`), 9 bytes,
+appended. No new accounts: `claim_excess` closes the same Contributor account
+`refund` would have, so an oversubscribed bidder reclaims the same rent a
+refunded one does.
+
+## How you would attack it
+
+**Stuff the vault to dilute everyone and take their excess.** This is the one
+that matters, and it is why this feature was chosen. The vault is an ordinary
+associated token account: anyone can transfer into it. The old settlement guard
+read `vault.amount`, which as a pass/fail check was merely wrong — a campaign
+with no contributions at all could pay out. As the **denominator of everyone's
+fill** it would be theft: push the denominator up, every honest bidder's `filled`
+falls, their `excess` rises past what the vault can cover, and the last claimers
+are left with nothing. The fix is that both numbers now come from program state.
+`current_amount` — written twice and read nowhere since the program was written —
+is now what decides whether a raise clears, and `settled_total` freezes it so
+claimers draining the book cannot move the ratio under each other.
+Two tests hold this: *does not count tokens transferred straight into the vault*
+and *cannot be diluted by a stranger stuffing the vault after the book shuts*.
+
+**Round the fills the wrong way and the last claimer is insolvent.** With
+`filled` rounded down, the fills sum to *less* than the target while the claims
+sum to *more* than the vault holds. I simulated 20,000 random books before
+writing any Rust: floor rounding runs short by up to 9 units, ceil never runs
+short at all. Rounding up leaves dust rather than a hole, and the dust goes to
+the maker when the campaign is wound up. Reverting that one `checked_add` turns
+both solvency tests red.
+
+**Refund and claim are two doors to the same tokens.** A settled campaign whose
+vault has been partly drained by claims looks, by balance alone, like a campaign
+under its target. The old `vault.amount < amount_to_raise` refund guard would
+have waved through a refund on money the maker had already been paid. Gating on
+`settled` closes it. This is the guide's own warning about contribute and refund
+being legal at the same moment, one instruction over.
+
+**Bid, then claim twice.** `claim_excess` closes the Contributor account, so the
+second attempt has no account to read.
+
+**Never claim, and the campaign can never be wound up.** `close_campaign` waits
+for `current_amount == 0`, so one absent bidder strands the maker's rent
+indefinitely. Deliberate: the alternative is a deadline after which unclaimed
+excess is forfeit, which is a worse failure — it takes real money from someone
+who was merely slow. The rent at risk is 0.00366792 SOL; the excess is not.
+
+**A dust griefer stalls the wind-up.** Anyone can transfer a token into the vault
+after the last claim. It cannot block the close — the guard counts the book, not
+the vault, and the sweep sends whatever is there to the maker. They are simply
+donating.
+
+## What is left undone
+
+`current_amount` and `vault.amount` still disagree by design, because the vault
+can receive unsolicited transfers. Nothing now *reads* the vault to make a
+decision, which is the property that matters, but a reader of the code should
+know the two numbers are not the same thing and never will be.
+
+## Testing
+
+`tests/bookbuild-bankrun.ts`, ten cases: pro-rata fills with the arithmetic
+asserted to the unit, solvency to the last claimer, both sides of the target
+boundary, settlement before the deadline, the two vault-stuffing attacks, double
+claim, refund-after-settlement, and a bid at 90% of target that the old cap
+refused. `tests/lifecycle-bankrun.ts` is updated for the new flow and still
+covers the lifecycle feature underneath.
+
+Each guard was reverted in turn:
+
+| Reverted | Result |
+|---|---|
+| settlement reads `vault.amount` instead of the book | **1 failing** — the stuffing attack |
+| maker paid the whole vault instead of the target | 3 failing — fills, solvency, double-claim |
+| fills round down instead of up | **2 failing** — both solvency cases |
+| settlement allowed before the deadline | **1 failing** — the deadline test |
+| refund gated on the vault balance again | **1 failing** — the double-spend test |

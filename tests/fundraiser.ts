@@ -162,11 +162,16 @@ describe("fundraiser", () => {
     }
   });
 
-  it("Check contributions - Robustness Test", async () => {
-    try {
-      const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+  // Settlement now shuts the book first: an oversubscribed raise is cleared pro
+  // rata, so the maker must not be able to settle while bids are still arriving.
+  // A seven day fundraiser therefore cannot settle on the day it opens, and a
+  // real validator's clock cannot be moved past that. The settled path lives in
+  // tests/bookbuild-bankrun.ts.
+  it("Check contributions - refused before the deadline", async () => {
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-      const tx = await program.methods
+    try {
+      await program.methods
       .checkContributions()
       .accountsPartial({
         maker: maker.publicKey,
@@ -177,17 +182,15 @@ describe("fundraiser", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([maker])
-      .rpc({
-        skipPreflight: true,
-      })
-      .then(confirm);
-
-      console.log("\nChecked contributions");
-      console.log("Your transaction signature", tx);
-      console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-    } catch (error) {
-      console.log("\nError checking contributions");
-      console.log(error.msg);
+      .rpc();
+      throw new Error("settlement on day 0 of a 7 day fundraiser should have been refused");
+    } catch (err: any) {
+      if (err?.message?.startsWith("settlement on day 0")) throw err;
+      const code = err?.error?.errorCode?.code ?? "";
+      if (code.toLowerCase() !== "fundraisernotended") {
+        throw new Error(`expected FundraiserNotEnded, got ${code || err?.message}`);
+      }
+      console.log("\nSettlement correctly refused before the deadline:", code);
     }
   });
   

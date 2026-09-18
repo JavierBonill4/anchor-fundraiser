@@ -268,9 +268,36 @@ describe("fundraiser — campaign lifecycle", () => {
         mintToRaise: c.mint,
         fundraiser: c.fundraiser,
         vault: c.vault,
+        makerAta: c.makerAta,
         tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
       .instruction();
+
+  const claimExcessIx = (c: Campaign) =>
+    program.methods
+      .claimExcess()
+      .accountsPartial({
+        contributor: payer.publicKey,
+        maker: c.maker.publicKey,
+        mintToRaise: c.mint,
+        fundraiser: c.fundraiser,
+        contributorAccount: c.contributorAccount,
+        contributorAta: c.contributorAta,
+        vault: c.vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+
+  /** Bid the whole target, shut the book, settle, and clear the one bidder off it. */
+  const settleFully = async (c: Campaign) => {
+    await send([await contributeIx(c, TARGET)]);
+    await advanceDays(8n);
+    await send([await checkContributionsIx(c)], [c.maker]);
+    await send([await claimExcessIx(c)]);
+  };
 
   /** Top the vault up to the target without going through `contribute`. */
   const topUpVault = (c: Campaign, amount: number) =>
@@ -284,8 +311,11 @@ describe("fundraiser — campaign lifecycle", () => {
     const { maker, mint, contributorAta } = await freshMakerAndMint();
     const first = await openCampaign(maker, mint, contributorAta, 1, 7);
 
-    await topUpVault(first, TARGET);
-    await send([await checkContributionsIx(first)], [maker]);
+    // Settlement no longer closes anything: the vault may still owe the
+    // oversubscribed their excess, and the fundraiser holds the numbers needed
+    // to work it out. The crank fires once the book is empty.
+    await settleFully(first);
+    await send([await closeCampaignIx(first, payer.publicKey)]);
 
     assert.isNull(
       await context.banksClient.getAccount(first.fundraiser),
@@ -384,7 +414,7 @@ describe("fundraiser — campaign lifecycle", () => {
       await send([await closeCampaignIx(c, payer.publicKey)]);
       assert.fail("close_campaign with tokens still in the vault must be refused");
     } catch (err) {
-      assertErrorIs(err, "VaultNotEmpty", "the contributor has not refunded yet");
+      assertErrorIs(err, "ClaimsOutstanding", "the contributor has not refunded yet");
     }
 
     assert.strictEqual(
@@ -411,17 +441,20 @@ describe("fundraiser — campaign lifecycle", () => {
     const { maker, mint, contributorAta } = await freshMakerAndMint();
 
     const first = await openCampaign(maker, mint, contributorAta, 7, 7);
-    await send([await contributeIx(first, CONTRIBUTION)]);
-    await topUpVault(first, TARGET - CONTRIBUTION);
+    await send([await contributeIx(first, TARGET)]);
+    await advanceDays(8n);
     await send([await checkContributionsIx(first)], [maker]);
 
-    // Nothing closes a Contributor on the success path, so this one is stranded.
+    // The Contributor is still on chain until its owner clears it off the book.
     assert.isNotNull(
       await context.banksClient.getAccount(first.contributorAccount),
-      "the Contributor from a successful campaign is still on chain"
+      "the Contributor from a settled campaign is still on chain"
     );
 
-    // One second later, the same maker reuses id 7.
+    await send([await claimExcessIx(first)]);
+    await send([await closeCampaignIx(first, payer.publicKey)]);
+
+    // A day later, the same maker reuses id 7.
     await advanceDays(1n);
     const second = await openCampaign(maker, mint, contributorAta, 7, 7);
     assert.notStrictEqual(
@@ -435,7 +468,7 @@ describe("fundraiser — campaign lifecycle", () => {
     assert.strictEqual(
       fresh.amount.toString(),
       String(CONTRIBUTION),
-      "the returning contributor starts from zero, not from the stranded balance"
+      "the returning contributor starts from zero, not from the previous campaign's balance"
     );
   });
 
@@ -443,24 +476,7 @@ describe("fundraiser — campaign lifecycle", () => {
   // Unchanged, and still worth asserting
   // ------------------------------------------------------------------
 
-  it("still pays out a vault that never saw a contribution, with current_amount at 0", async () => {
-    const { maker, mint, contributorAta } = await freshMakerAndMint();
-    const c = await openCampaign(maker, mint, contributorAta, 1, 7);
-
-    await topUpVault(c, TARGET);
-
-    const state = await program.account.fundraiser.fetch(c.fundraiser);
-    assert.strictEqual(
-      state.currentAmount.toString(),
-      "0",
-      "nothing went through contribute, so the program's own counter reads 0"
-    );
-
-    await send([await checkContributionsIx(c)], [maker]);
-    assert.strictEqual(
-      await tokenBalance(c.makerAta),
-      BigInt(TARGET),
-      "the guards read vault.amount, so a directly funded vault still pays out"
-    );
-  });
+  // The old "a directly funded vault still pays out" case has moved to
+  // tests/bookbuild-bankrun.ts, where it is now inverted: settlement reads the
+  // book, so stuffing the vault settles nothing.
 });
