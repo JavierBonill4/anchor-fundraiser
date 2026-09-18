@@ -3,6 +3,7 @@ import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
+import { fundraiserPda, contributorPda } from "./pda";
 
 describe("fundraiser", () => {
   // Configure the client to use the local cluster.
@@ -21,9 +22,13 @@ describe("fundraiser", () => {
 
   const wallet = provider.wallet as NodeWallet;
 
-  const fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
+  const CAMPAIGN_ID = 1;
 
-  const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+  const fundraiser = fundraiserPda(program.programId, maker.publicKey, CAMPAIGN_ID);
+
+  // `time_started` is one of the contributor seeds, so this address cannot be
+  // derived until the campaign exists. Assigned at the end of "Initialize".
+  let contributor: anchor.web3.PublicKey;
 
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
@@ -55,7 +60,7 @@ describe("fundraiser", () => {
 
     const tx = await program
     .methods
-    .initialize(new anchor.BN(30000000), 7)   // days; must be at least 1
+    .initialize(new anchor.BN(CAMPAIGN_ID), new anchor.BN(30000000), 7)   // days; must be at least 1
     .accountsPartial({
       maker: maker.publicKey,
       fundraiser,
@@ -73,6 +78,9 @@ describe("fundraiser", () => {
 
     console.log("\nInitialized fundraiser Account");
     console.log("Your transaction signature", tx);
+
+    const { timeStarted } = await program.account.fundraiser.fetch(fundraiser);
+    contributor = contributorPda(program.programId, fundraiser, provider.publicKey, timeStarted);
   });
 
   it("Contribute to Fundraiser", async () => {
@@ -154,11 +162,16 @@ describe("fundraiser", () => {
     }
   });
 
-  it("Check contributions - Robustness Test", async () => {
-    try {
-      const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+  // Settlement now shuts the book first: an oversubscribed raise is cleared pro
+  // rata, so the maker must not be able to settle while bids are still arriving.
+  // A seven day fundraiser therefore cannot settle on the day it opens, and a
+  // real validator's clock cannot be moved past that. The settled path lives in
+  // tests/bookbuild-bankrun.ts.
+  it("Check contributions - refused before the deadline", async () => {
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-      const tx = await program.methods
+    try {
+      await program.methods
       .checkContributions()
       .accountsPartial({
         maker: maker.publicKey,
@@ -169,17 +182,15 @@ describe("fundraiser", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([maker])
-      .rpc({
-        skipPreflight: true,
-      })
-      .then(confirm);
-
-      console.log("\nChecked contributions");
-      console.log("Your transaction signature", tx);
-      console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-    } catch (error) {
-      console.log("\nError checking contributions");
-      console.log(error.msg);
+      .rpc();
+      throw new Error("settlement on day 0 of a 7 day fundraiser should have been refused");
+    } catch (err: any) {
+      if (err?.message?.startsWith("settlement on day 0")) throw err;
+      const code = err?.error?.errorCode?.code ?? "";
+      if (code.toLowerCase() !== "fundraisernotended") {
+        throw new Error(`expected FundraiserNotEnded, got ${code || err?.message}`);
+      }
+      console.log("\nSettlement correctly refused before the deadline:", code);
     }
   });
   

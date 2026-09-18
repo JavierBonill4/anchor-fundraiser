@@ -13,6 +13,7 @@ use crate::{
 };
 
 #[derive(Accounts)]
+#[instruction(id: u64)]
 pub struct Initialize<'info> {
     #[account(mut)]
     pub maker: Signer<'info>,
@@ -20,7 +21,7 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = maker,
-        seeds = [b"fundraiser", maker.key().as_ref()],
+        seeds = [b"fundraiser", maker.key().as_ref(), &id.to_le_bytes()],
         bump,
         space = ANCHOR_DISCRIMINATOR + Fundraiser::INIT_SPACE,
     )]
@@ -38,7 +39,7 @@ pub struct Initialize<'info> {
 }
 
 impl<'info> Initialize<'info> {
-    pub fn initialize(&mut self, amount: u64, duration: u8, bumps: &InitializeBumps) -> Result<()> {
+    pub fn initialize(&mut self, id: u64, amount: u64, duration: u8, bumps: &InitializeBumps) -> Result<()> {
 
         // Check if the amount to raise meets the minimum amount required.
         //
@@ -62,7 +63,10 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            id,
+            settled: false,
+            settled_total: 0,
         });
         
         Ok(())

@@ -15,9 +15,9 @@ pub use constants::*;
 pub mod fundraiser {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, amount: u64, duration: u8) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>, id: u64, amount: u64, duration: u8) -> Result<()> {
 
-        ctx.accounts.initialize(amount, duration, &ctx.bumps)?;
+        ctx.accounts.initialize(id, amount, duration, &ctx.bumps)?;
 
         Ok(())
     }
@@ -39,6 +39,22 @@ pub mod fundraiser {
     pub fn refund(ctx: Context<Refund>) -> Result<()> {
 
         ctx.accounts.refund()?;
+
+        Ok(())
+    }
+
+    /// Takes back the part of a bid an oversubscribed raise did not need.
+    pub fn claim_excess(ctx: Context<ClaimExcess>) -> Result<()> {
+
+        ctx.accounts.claim_excess()?;
+
+        Ok(())
+    }
+
+    /// Permissionless cleanup once nobody is owed anything.
+    pub fn close_campaign(ctx: Context<CloseCampaign>) -> Result<()> {
+
+        ctx.accounts.close_campaign()?;
 
         Ok(())
     }
