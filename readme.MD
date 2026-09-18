@@ -609,10 +609,11 @@ between a leak and a bug.
 
 ## Testing
 
-`tests/lifecycle-bankrun.ts`, six cases: the two happy paths, the boundary at the
-deadline (day 6 refused, day 7 accepted), the abuse case above, the id-reuse case,
-and the unchanged direct-funding behaviour. Bankrun rather than a validator
-because three of them need the clock moved.
+`tests/lifecycle-bankrun.ts`, five cases: the two happy paths, the boundary at the
+deadline (day 6 refused, day 7 accepted), the abuse case above, and the id-reuse
+case. Bankrun rather than a validator because three of them need the clock moved.
+(The direct-funding case moved to `tests/bookbuild-bankrun.ts` with the next
+feature, where it is inverted.)
 
 Each piece of the feature was reverted in turn and the suite re-run:
 
@@ -768,3 +769,15 @@ Each guard was reverted in turn:
 | fills round down instead of up | **2 failing** — both solvency cases |
 | settlement allowed before the deadline | **1 failing** — the deadline test |
 | refund gated on the vault balance again | **1 failing** — the double-spend test |
+
+The whole suite, all five files, runs green against a local validator:
+
+```
+$ anchor test --validator legacy
+  26 passing (24s)
+```
+
+Anchor 1.1.2 defaults to `surfpool` for its local validator
+(`ValidatorType::Surfpool`, `cli/src/lib.rs`); `--validator legacy` uses
+`solana-test-validator`, which ships with the Solana CLI, so no extra install is
+needed to reproduce this.
