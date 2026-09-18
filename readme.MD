@@ -568,5 +568,63 @@ there. Two caps stay enforced on-chain in `contribute`:
    window has closed, at which point no further contributions exist, so during
    the campaign the cap only ever grows. A stored milestone flag would need a
    one-way rule and a paragraph like this one; a derived value cannot
-   disagree with the vault, which is why the tier is computed rather than
-   stored.
+disagree with the vault, which is why the tier is computed rather than
+    stored.
+
+---
+
+# Live demo on devnet
+
+The add-on is deployed to devnet and comes with a self-contained demo client
+that walks the whole tiered-cap scenario against the live program - no local
+validator, no `anchor test`.
+
+- **Program id (devnet):** `8tNkFQaUao8jz9Px2XSCe6aUrcU5uo29b54tAJSTL64S`
+- **Cluster:** `https://api.devnet.solana.com` (override with `RPC_URL`)
+- **Wallet:** `~/.config/solana/id.json` by default (override with
+  `KEYPAIR_PATH`); must hold a little SOL for fees and rent.
+
+```bash
+anchor build                # refresh target/idl/fundraiser.json
+yarn ts-node scripts/demo-deployed.ts
+```
+
+Each run creates a **fresh** mint and campaign, so it is fully repeatable:
+
+1. mint + fundraiser (30 tokens / 7 days) are created
+2. tier 1: vault below 50% caps everyone at 10% - A's second contribution is
+   rejected with `MaximumContributionsReached`
+3. A's refund while the window is open is rejected with `FundraiserNotEnded`
+4. B, C, D, E fill the vault to exactly 50%
+5. tier 2 unlocks (10% -> 20%): A reaches exactly 6t, F lands a single 4t
+   that the old cap would have blocked, and F's 7t total is rejected
+6. tier 3 unlocks at 75% (20% -> 30%): G lands exactly 9t, with a 10t
+   attempt rejected first
+7. the maker sweeps the vault, the target is met, and the `fundraiser` PDA
+   is closed
+
+Every step prints `[OK]`/`[!!]` plus the vault balance so the result is
+auditable.
+
+## Recovering the SOL the demo funds
+
+The demo moves small amounts of devnet SOL into throwaway wallets (0.05 SOL
+to the maker + 0.02 SOL to each of 7 contributors). Their seeds are written to
+`scripts/.demo-wallets.json` (gitignored) as each wallet is created, and the
+balance is returned to your authority wallet automatically:
+
+- at the end of a successful run,
+- in the `main().catch(...)` error handler, and
+- in an `uncaughtException` handler (the public devnet RPC occasionally
+  throws a hard `429` that escapes the promise chain).
+
+You can also recover manually at any time:
+
+```bash
+RECOVER=1 yarn ts-node scripts/demo-deployed.ts
+```
+
+Only wallets that actually hold SOL (`>= 0.0001`) are touched, and the
+transfer moves the full balance so the throwaway account is closed. Because
+the seeds are persisted, even a run killed mid-way keeps its wallets
+recoverable on the next invocation.
