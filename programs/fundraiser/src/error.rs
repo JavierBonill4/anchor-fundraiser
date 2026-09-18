@@ -18,6 +18,12 @@ pub enum FundraiserError {
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
     InvalidAmount,
-    #[msg("The vault still holds tokens — every contributor must refund first")]
-    VaultNotEmpty
+    #[msg("Contributors have not all been paid out yet")]
+    ClaimsOutstanding,
+    #[msg("The campaign has already been settled")]
+    AlreadySettled,
+    #[msg("The campaign has not been settled yet")]
+    NotSettled,
+    #[msg("Arithmetic overflow")]
+    Overflow
 }
