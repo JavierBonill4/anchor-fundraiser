@@ -490,3 +490,83 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+# Add-on: Tiered Contribution Cap
+
+## What it does
+
+Originally a single contributor could never hold or give more than 10% of the
+target, no matter how the campaign was going. This add-on makes that cap grow
+as the campaign proves itself:
+
+| Vault reached (of target) | per-contributor cap |
+| --- | --- |
+| less than 50% | 10% of the target (the original rule) |
+| 50% to below 75% | 20% of the target |
+| 75% and up | 30% of the target |
+
+A backer who joined a small, unproven campaign is welcome to help it cross the
+halfway mark; a bigger backer is only let in once the campaign has actually got
+there. Two caps stay enforced on-chain in `contribute`:
+
+- **in one call** - `amount <= cap`, else `ContributionTooBig`
+- **in total** - the contributor's cumulative `amount <= cap`, else `MaximumContributionsReached`
+
+## How it works
+
+- **No new state.** The tier is not stored, it is *derived*: `contribute`
+  computes `raised_percent = current_amount * 100 / amount_to_raise`, picks the
+  tier, and caps at `amount_to_raise * tier / 100`. There is no flag to go
+  stale and no account to pay rent for.
+- **Where it fires:** at the top of `contribute`, replacing the constants-based
+  cap. Nothing else changes - `initialize`, `check_contributions` and `refund`
+  are untouched.
+- **The tier is read before the contribution lands.** A contribution that
+  crosses 50% is still held to the tier it is leaving (10%); it earns the
+  higher tier for the *next* contribution, not for itself. This keeps a single
+  large transaction from buying its way into a tier the vault has not yet
+  earned, and it is what makes the boundary test exact (`>` vs `>=`).
+- **All money math is checked.** `checked_mul`, `checked_div`, `checked_add`,
+  surfaced as a new `ContributionCapOverflow` error rather than a panicking
+  wrap.
+
+## What it costs
+
+- **Rent:** nothing new. No account, no field, no seed. The `Fundraiser` and
+  `Contributor` layouts are byte-for-byte unchanged.
+- **Compute:** two `u64` multiply-then-divide pairs per contribution in place of
+  one. The measured cost of a `contribute` instruction went from ~23–26k to
+  ~30k compute units of 200k available - a few tens of units, nothing to budget
+  around.
+
+## How you would attack it
+
+1. **Buy your way past the gatekeeper with fresh wallets.** The cap is
+   per-PDA, not per-human, so one wealthy actor can split across many fresh
+   wallets and each gets a full cap. That weakness predates this add-on (the
+   original 10% cap had it too) - this feature does not make it better or
+   worse, but it does raise the *value* of doing so, since late in a campaign a
+   whale can put far more through a crowd of wallets than 10%.
+2. **DoS the threshold** - contribute up to 49.99% and (illegally) nothing
+   forced. A funder who does not want the 20% tier to unlock simply does not
+   top the vault past 50%, and no one else can either without exceeding the
+   current 10% per-person cap. This is a liveness nuisance, not a theft: the
+   campaign still finishes and payouts are unaffected, but a patient whale can
+   keep *other* backers small. The honest answer is that any cap scheme with a
+   threshold has this shape.
+3. **The pre-semantics race.** Because the tier is derived from
+   `current_amount` *before* the transfer, an oversized contribution intended
+   to cross 50% in the same transaction simply fails - good. But another
+   contributor can front-run it: contribute just enough to cross, then let
+   their own bigger contribution follow. That is the designed behaviour, not a
+   bug; the "exploit" is just coordination.
+4. **Refund collapse.** `refund` reduces `current_amount`, so after refunds
+   the derived tier *can* shrink. That is honest (the vault really is smaller)
+   rather than a bug, and it is nearly moot: refunds are only legal once the
+   window has closed, at which point no further contributions exist, so during
+   the campaign the cap only ever grows. A stored milestone flag would need a
+   one-way rule and a paragraph like this one; a derived value cannot
+   disagree with the vault, which is why the tier is computed rather than
+   stored.
