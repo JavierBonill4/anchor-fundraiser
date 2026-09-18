@@ -11,6 +11,20 @@ use instructions::*;
 use error::*;
 pub use constants::*;
 
+/// Emitted the moment a campaign crosses a quarter-mark of its target.
+///
+/// Events are program logs, not state: emitted alongside the on-chain
+/// `milestones_fired` bitmask, never instead of it. Anything off-chain can
+/// subscribe to this and react without polling the vault balance.
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    /// 0 = 25%, 1 = 50%, 2 = 75%
+    pub quarter: u8,
+    /// `current_amount` at the moment the mark was crossed.
+    pub amount: u64,
+}
+
 #[program]
 pub mod fundraiser {
     use super::*;

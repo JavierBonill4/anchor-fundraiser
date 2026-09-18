@@ -11,7 +11,9 @@ use crate::{
     state::{
         Contributor, 
         Fundraiser
-    }, FundraiserError, 
+    }, 
+    FundraiserError, 
+    MilestoneReached,
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
@@ -105,6 +107,42 @@ impl<'info> Contribute<'info> {
         self.fundraiser.current_amount += amount;
 
         self.contributor_account.amount += amount;
+
+        // --- Milestone tracking -------------------------------------------
+        //
+        // We reason in quarters, not fractions: `current * 4 / target` is an
+        // integer in {0, 1, 2, 3, 4}. Multiplying *before* dividing keeps the
+        // precision (a division first would read zero until the very end), and
+        // the multiplication is where overflow lives, so it is checked.
+        let quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            / self.fundraiser.amount_to_raise;
+
+        // Quarters 0, 1 and 2 are the 25%, 50% and 75% marks. The fourth
+        // quarter (100%) is not a milestone — it is the success path, handled
+        // by `check_contributions`.
+        //
+        // The loop computes *where the campaign is now*, not what changed, and
+        // each flag is only set once. A contribution that lands crossing two
+        // marks fires both in a single go, and re-running the loop later can
+        // never fire the same mark twice. The flag is set before the event is
+        // emitted: if the event ever became fallible work, the whole
+        // instruction unwinds together with the flag, so it cannot be left
+        // marked without its event.
+        for i in 0..quarters.min(3) {
+            let flag = 1u8 << (i as u8);
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    quarter: i as u8,
+                    amount: self.fundraiser.current_amount,
+                });
+            }
+        }
 
         Ok(())
     }
