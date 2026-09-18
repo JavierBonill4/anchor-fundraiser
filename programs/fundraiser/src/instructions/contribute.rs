@@ -13,8 +13,7 @@ use crate::{
         Fundraiser
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    SECONDS_TO_DAYS
 };
 
 #[derive(Accounts)]
@@ -71,11 +70,14 @@ impl<'info> Contribute<'info> {
 
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
-        // Check if the amount to contribute is less than the maximum allowed contribution
-        require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
-            FundraiserError::ContributionTooBig
-        );
+        // No ceiling on a single bid, and no cumulative ceiling per person.
+        //
+        // The old 10% caps existed to stop one whale owning the raise, and they
+        // paid for it by *rejecting money* — the one thing a fundraiser should
+        // never do. Pro-rata settlement gets the same protection for free: a bid
+        // of any size is diluted by everyone else's, and splitting a bid across
+        // a hundred wallets changes nothing, so there is no sybil to defend
+        // against either.
 
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
@@ -83,13 +85,6 @@ impl<'info> Contribute<'info> {
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 < self.fundraiser.duration as i64,
             crate::FundraiserError::FundraiserEnded
-        );
-
-        // Check if the maximum contributions per contributor have been reached
-        require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
-            FundraiserError::MaximumContributionsReached
         );
 
         // Transfer the funds from the contributor to the vault.
@@ -106,10 +101,20 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // `current_amount` is the order book. It used to be written here and
+        // read nowhere; settlement now divides by it, so every bit of this
+        // arithmetic is consensus-critical and none of it may be a bare `+`.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
         Ok(())
     }

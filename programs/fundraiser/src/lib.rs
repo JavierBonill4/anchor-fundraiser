@@ -43,7 +43,15 @@ pub mod fundraiser {
         Ok(())
     }
 
-    /// Permissionless cleanup for a campaign that missed its target.
+    /// Takes back the part of a bid an oversubscribed raise did not need.
+    pub fn claim_excess(ctx: Context<ClaimExcess>) -> Result<()> {
+
+        ctx.accounts.claim_excess()?;
+
+        Ok(())
+    }
+
+    /// Permissionless cleanup once nobody is owed anything.
     pub fn close_campaign(ctx: Context<CloseCampaign>) -> Result<()> {
 
         ctx.accounts.close_campaign()?;

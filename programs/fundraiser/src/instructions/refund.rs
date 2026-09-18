@@ -12,6 +12,7 @@ use crate::{
         Contributor, 
         Fundraiser
     }, 
+    FundraiserError,
     SECONDS_TO_DAYS
 };
 
@@ -68,10 +69,14 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::FundraiserNotEnded
         );
 
-        require!(
-            self.vault.amount < self.fundraiser.amount_to_raise,
-            crate::FundraiserError::TargetMet
-        );
+        // Settlement, not the vault balance, is what closes the refund window.
+        //
+        // The old check compared `vault.amount` against the target. Once
+        // `claim_excess` starts draining the vault, a settled campaign's balance
+        // falls back below the target — and this check would wave through a
+        // refund on money the maker had already been paid. Two routes to the
+        // same tokens is a double spend.
+        require!(!self.fundraiser.settled, FundraiserError::TargetMet);
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
@@ -100,8 +105,12 @@ impl<'info> Refund<'info> {
         // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        // Leaving the book. `close_campaign` waits for this to reach zero.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(FundraiserError::Overflow)?;
 
         Ok(())
     }

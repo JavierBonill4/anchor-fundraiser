@@ -65,6 +65,8 @@ impl<'info> Initialize<'info> {
             duration,
             bump: bumps.fundraiser,
             id,
+            settled: false,
+            settled_total: 0,
         });
         
         Ok(())
