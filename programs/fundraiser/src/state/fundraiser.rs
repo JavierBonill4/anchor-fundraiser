@@ -7,6 +7,7 @@ pub struct Fundraiser {
     pub mint_to_raise: Pubkey,
     pub amount_to_raise: u64,
     pub current_amount: u64,
+    pub milestones_reached: u8,
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
