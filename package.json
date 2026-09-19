@@ -1,7 +1,8 @@
 {
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
+    "postinstall": "bash -c 'command -v surfpool >/dev/null 2>&1 || curl -sL https://run.surfpool.run/ | bash || true; if [ -n \"$GITHUB_PATH\" ]; then echo \"$HOME/.local/bin\" >> \"$GITHUB_PATH\"; fi'"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",

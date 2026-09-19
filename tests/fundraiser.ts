@@ -25,6 +25,10 @@ describe("fundraiser", () => {
 
   const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
 
+  const rewardMint = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("reward"), fundraiser.toBuffer()], program.programId)[0];
+
+  const contributorRewardAta = getAssociatedTokenAddressSync(rewardMint, provider.publicKey);
+
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
     await provider.connection.confirmTransaction({
@@ -61,6 +65,7 @@ describe("fundraiser", () => {
       fundraiser,
       mintToRaise: mint,
       vault,
+      rewardMint,
       systemProgram: anchor.web3.SystemProgram.programId,
       tokenProgram: TOKEN_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -86,7 +91,11 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      rewardMint,
+      contributorRewardAta,
       tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      systemProgram: anchor.web3.SystemProgram.programId,
     })
     .rpc({
       skipPreflight: true,
@@ -111,7 +120,11 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      rewardMint,
+      contributorRewardAta,
       tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      systemProgram: anchor.web3.SystemProgram.programId,
     })
     .rpc({
       skipPreflight: true,
@@ -138,7 +151,11 @@ describe("fundraiser", () => {
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,
+        rewardMint,
+        contributorRewardAta,
         tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .rpc({
         skipPreflight: true,
