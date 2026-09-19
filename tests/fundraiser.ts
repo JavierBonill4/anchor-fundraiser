@@ -201,6 +201,30 @@ describe("fundraiser", () => {
     console.log("Fundraiser Cancelled Flag: ", fundraiserAccount.cancelled);
   });
 
+  it("Refuses contributions if the fundraiser is cancelled", async () => {
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    try {
+      await program.methods
+      .contribute(new anchor.BN(1000000))
+      .accountsPartial({
+        contributor: provider.publicKey,
+        fundraiser,
+        contributorAccount: contributor,
+        contributorAta: contributorATA,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc({
+        skipPreflight: true,
+      });
+      throw new Error("the contribution should have been refused");
+    } catch (error) {
+      console.log("\nContribution successfully refused because fundraiser was cancelled");
+      console.log(error.error?.errorCode?.code ?? error.message);
+    }
+  });
+
   it("Refund Contributions - succeeds and cleans up after cancellation", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
@@ -237,6 +261,31 @@ describe("fundraiser", () => {
       throw new Error("Fundraiser PDA should have been closed");
     } else {
       console.log("Verified Fundraiser PDA was closed properly");
+    }
+  });
+
+  it("Refund Contributions - refused while the window is open", async () => {
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    try {
+      await program.methods
+      .refund()
+      .accountsPartial({
+        contributor: provider.publicKey,
+        maker: maker.publicKey,
+        mintToRaise: mint,
+        fundraiser,
+        contributorAccount: contributor,
+        contributorAta: contributorATA,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+      throw new Error("the refund should have been refused");
+    } catch (error) {
+      console.log("\nRefund refused while the fundraiser is still running");
+      console.log(error.error?.errorCode?.code ?? error.message);
     }
   });
 });
