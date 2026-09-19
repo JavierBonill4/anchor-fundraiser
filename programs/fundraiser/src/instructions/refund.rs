@@ -1,9 +1,13 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
+    burn,
+    close_account,
+    transfer,
+    Burn,
+    CloseAccount,
+    Mint,
+    Token,
+    TokenAccount,
     Transfer
 };
 
@@ -47,6 +51,19 @@ pub struct Refund<'info> {
         associated_token::authority = fundraiser
     )]
     pub vault: Account<'info, TokenAccount>,
+    // Same receipt mint created in `contribute` — referenced here, not created.
+    #[account(
+        mut,
+        seeds = [b"receipt", fundraiser.key().as_ref(), contributor.key().as_ref()],
+        bump,
+    )]
+    pub receipt_mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        associated_token::mint = receipt_mint,
+        associated_token::authority = contributor,
+    )]
+    pub contributor_receipt_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
@@ -95,6 +112,36 @@ impl<'info> Refund<'info> {
 
         // Update the fundraiser state by reducing the amount contributed
         self.fundraiser.current_amount -= self.contributor_account.amount;
+
+        // Clean up the one-time NFT receipt on refund — best-effort, not required.
+        //
+        // A contributor could send the receipt to another wallet before calling
+        // refund, leaving this ATA at 0 balance. Burning is only possible if they
+        // still hold it, and this refund must succeed either way: making the burn
+        // mandatory would let a contributor (or an attacker) permanently lock their
+        // own refund behind an NFT they no longer have. So: burn only if they still
+        // hold it, then close the ATA regardless (closing only requires 0 balance,
+        // which is true either way by this point).
+        if self.contributor_receipt_ata.amount > 0 {
+            let burn_cpi_accounts = Burn {
+                mint: self.receipt_mint.to_account_info(),
+                from: self.contributor_receipt_ata.to_account_info(),
+                authority: self.contributor.to_account_info(),
+            };
+            let burn_cpi_ctx = CpiContext::new(self.token_program.key(), burn_cpi_accounts);
+            burn(burn_cpi_ctx, 1)?;
+        }
+
+        // Close the now-empty receipt ATA and reclaim its rent back to the contributor.
+        // Note: the receipt *mint* itself can't be closed by the standard token
+        // program (only token accounts can), so its rent stays locked up forever.
+        let close_cpi_accounts = CloseAccount {
+            account: self.contributor_receipt_ata.to_account_info(),
+            destination: self.contributor.to_account_info(),
+            authority: self.contributor.to_account_info(),
+        };
+        let close_cpi_ctx = CpiContext::new(self.token_program.key(), close_cpi_accounts);
+        close_account(close_cpi_ctx)?;
 
         Ok(())
     }

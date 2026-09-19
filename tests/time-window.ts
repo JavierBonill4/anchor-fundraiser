@@ -75,6 +75,8 @@ describe("fundraiser — contribution window", () => {
     vault: anchor.web3.PublicKey;
     contributorAccount: anchor.web3.PublicKey;
     contributorAta: anchor.web3.PublicKey;
+    receiptMint: anchor.web3.PublicKey;
+    contributorReceiptAta: anchor.web3.PublicKey;
   };
 
   /**
@@ -122,6 +124,11 @@ describe("fundraiser — contribution window", () => {
       [Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
       program.programId
     );
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+      program.programId
+    );
+    const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey);
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await program.methods
@@ -139,7 +146,7 @@ describe("fundraiser — contribution window", () => {
       .rpc()
       .then(confirm);
 
-    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
+    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta, receiptMint, contributorReceiptAta };
   };
 
   const contribute = (c: Campaign, amount: number) =>
@@ -152,6 +159,8 @@ describe("fundraiser — contribution window", () => {
         contributorAccount: c.contributorAccount,
         contributorAta: c.contributorAta,
         vault: c.vault,
+        receiptMint: c.receiptMint,
+        contributorReceiptAta: c.contributorReceiptAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })

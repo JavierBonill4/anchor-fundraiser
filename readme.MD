@@ -490,3 +490,48 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: NFT Receipt
+
+### What it does
+
+```
+A contributor's first contribution to a fundraiser mints them a one-of-one NFT: a 0-decimal SPL mint with a total supply that can never exceed 1. It's proof they backed this specific campaign, sitting in their own wallet like any other token.
+
+If the campaign fails and they refund, the receipt is burned and its account closed — if they still hold it. If they've already sent it somewhere else, the refund still succeeds regardless (see "How you would attack it" below for why that's a deliberate choice, not a gap).
+
+```
+### How it works
+
+```
+Two things get added to the base program:
+
+Contributor.has_receipt: bool — a new field on the existing Contributor account. It starts false (account data is zero-initialized on creation, same as amount already was) and flips to true the moment a receipt is minted, so a second contribution from the same wallet never mints a second one.
+receipt_mint — a PDA mint, seeds ["receipt", fundraiser, contributor], one per (fundraiser, contributor) pair. Mint authority starts as the fundraiser PDA and gets permanently revoked to None immediately after minting the single token, in the same instruction — so the supply is fixed at 1 forever, and there is no window where anyone could mint a second one even if they wanted to.
+
+The mint and its associated token account are created by hand in contribute's handler (manual create_account + initialize_mint2 CPIs), not through Anchor's usual init_if_needed + mint::authority = ... sugar. That wasn't the original plan — it's the fix for a real bug: that sugar re-validates the mint's current authority on every single call, not just at creation. Since this program deliberately revokes that authority right after the first mint, every contribution after the first would fail Anchor's own account validation (ConstraintMintMintAuthority) before the handler, and its has_receipt guard, ever ran. Writing the creation out manually sidesteps that — Anchor still validates the account's address (seeds/ bump, which never changes), just not its authority.
+
+On refund, the receipt is cleaned up best-effort: burn only runs if the contributor's receipt ATA still holds the token; the ATA is closed either way (closing only requires a 0 balance, which is true whether we just burned it or it was already empty).
+
+```
+
+### What it costs
+
+```
+~200 extra lines across contribute.rs, refund.rs, contributor.rs, and error.rs — roughly three times the size of the base contribute instruction, mostly from writing account creation by hand instead of leaning on Anchor's sugar.
+5 extra accounts touched on a contributor's first contribution: receipt_mint, contributor_receipt_ata, and the associated token program, on top of the base flow's accounts.
+Real compute cost: a first contribution now runs create_account + initialize_mint2 + ATA creation + mint_to + set_authority, all in one transaction — roughly 84,000 of the 200,000 compute unit budget, versus a small fraction of that for a plain contribution with no receipt logic.
+Permanently locked rent: the receipt mint account's rent is never reclaimed, even after a refund. The standard SPL Token program can close a token account, but not a mint — so that rent sits there forever. This is a real, unavoidable cost of the one-of-one design, not a bug.
+
+```
+
+### How you would attack it
+
+```
+Move the receipt before refunding, then refund anyway. This works — on purpose. Making the burn mandatory would mean a contributor who sent their receipt to another wallet (accidentally, or to sell it, or because someone else convinced them to) could no longer get their own refund at all, since the burn CPI would fail with nothing to burn and the whole transaction would revert. Locking someone's refund behind an NFT they no longer hold is a worse outcome than a stray receipt surviving somewhere with no claim attached to it. So: refund always succeeds, and the receipt either gets cleaned up or doesn't, depending on whether it's still in your wallet at the time.
+Try to substitute a different mint into the receipt_mint slot — tested directly (NFT Receipt - abuse: rejects a substituted mint account). Anchor's seeds = [...] constraint on that account is still fully enforced even though the account type is UncheckedAccount; passing an unrelated pubkey gets rejected with ConstraintSeeds before the handler ever runs.
+Try to force a second mint by contributing twice. Blocked twice over: the has_receipt flag skips the mint block entirely on a second call, and even if that guard weren't there, the mint's authority is already None after the first contribution — the SPL Token program itself would refuse a second mint_to, since there's no longer any authority left to sign for it.
+
+```
