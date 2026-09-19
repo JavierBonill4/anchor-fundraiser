@@ -490,3 +490,207 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+# Assignment Extension — Fundraiser Milestone Tracking
+
+## Feature Overview
+
+This project extends the original fundraiser with on-chain milestone tracking.
+
+The fundraiser records when total contributions reach or cross:
+
+- 25%
+- 50%
+- 75%
+
+Each milestone is stored permanently in the Fundraiser account and emits a
+`MilestoneReached` event exactly once.
+Then add the full sections we discussed underneath it:
+## State Design
+
+A new field was appended to the `Fundraiser` account:
+
+```rust
+pub milestones_fired: u8,
+It is used as a bitmask:
+
+| Bit   | Milestone |
+| ----- | --------- |
+| bit 0 | 25%       |
+| bit 1 | 50%       |
+| bit 2 | 75%       |
+
+Examples:
+00000000 = no milestones reached
+00000001 = 25% reached
+00000011 = 25% and 50% reached
+00000111 = 25%, 50%, and 75% reached
+
+A bitmask keeps the persistent storage increase to only one byte.
+
+Milestone Detection
+
+Milestones are checked after every successful contribution.
+
+Instead of requiring the fundraiser to land exactly on a milestone, the program
+checks:
+current_amount * 100 >= amount_to_raise * milestone_percentage
+
+This means that moving directly from 20% to 27.5% still triggers the 25%
+milestone.
+
+The program loops over all milestone thresholds so the implementation remains
+correct even if a future contribution crosses more than one milestone.
+
+Milestone Event
+
+When a milestone is reached for the first time, the program emits:
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub percentage: u8,
+    pub current_amount: u64,
+}
+The event records:
+
+the fundraiser address
+the milestone reached
+the amount raised when the threshold was crossed
+
+A milestone that has already fired is skipped, preventing duplicate events.
+
+Checked Arithmetic
+
+Token-related arithmetic uses checked operations such as:
+checked_add
+checked_sub
+checked_mul
+checked_div
+
+Arithmetic failure returns:
+FundraiserError::ArithmeticOverflow
+
+This protects:
+
+contribution limit calculations
+contributor accounting
+fundraiser accounting
+milestone threshold calculations
+refund accounting
+
+from integer overflow or underflow.
+
+Refund Semantics
+
+Milestones are treated as historical achievements.
+
+For example, if a fundraiser reaches 50%:
+milestones_fired = 00000011
+
+and refunds later reduce current_amount below 50%, the milestone bits are not
+cleared.
+
+Therefore:
+
+current_amount
+
+represents the current amount held by the fundraiser, while:
+
+milestones_fired
+
+represents thresholds that were reached at any point in the fundraiser's
+history.
+
+Refund subtraction also uses checked_sub to protect against arithmetic
+underflow.
+
+Rent and Storage Impact
+
+The feature adds one u8 field to each Fundraiser account.
+
+Additional persistent storage:
+
+1 byte per fundraiser
+
+No new PDA or token account is required for milestone tracking.
+
+The Fundraiser account already uses Anchor's InitSpace, so newly initialized
+Fundraiser accounts allocate the required space automatically.
+
+Compute Impact
+
+Every successful contribution performs at most three milestone checks.
+
+Each check consists mainly of:
+
+a bitmask check
+checked integer multiplication
+an integer comparison
+
+Only newly reached milestones modify state and emit an event.
+
+Because there are exactly three milestones, the compute overhead is bounded and
+does not grow with the number of contributors.
+
+Attack / Abuse Analysis
+Duplicate milestone triggering
+
+A contributor could continue contributing after a milestone has already been
+reached in an attempt to produce duplicate milestone events.
+
+The program prevents this by checking the corresponding bit:
+
+if self.fundraiser.milestones_fired & bit != 0 {
+    continue;
+}
+
+Once the bit has been set, that milestone cannot be emitted again.
+
+Integer overflow or underflow
+
+Very large token values could otherwise overflow multiplication or addition.
+
+All token-related calculations use checked arithmetic and return
+ArithmeticOverflow if the operation cannot be represented safely.
+
+Crossing multiple milestones
+
+A sufficiently large contribution could cross several milestone boundaries in
+one transaction.
+
+The program therefore loops through every milestone rather than using mutually
+exclusive if/else conditions.
+
+Every newly satisfied milestone will be recorded.
+
+Refund manipulation
+
+Refunds can reduce current_amount after the fundraiser has ended unsuccessfully.
+
+They intentionally do not reset milestone bits because milestones represent
+historical progress.
+
+Refund accounting uses checked_sub so malformed accounting cannot silently
+underflow.
+
+Tests
+
+The milestone test suite verifies that:
+
+the bitmask starts at 0
+no milestone is fired below 25%
+moving from 20% to 27.5% fires 25%
+the 25% milestone does not fire twice
+moving from 47.5% to 52.5% fires 50%
+moving from 67.5% to 77.5% fires 75%
+emitted events contain the correct percentage and current amount
+the final bitmask becomes 7
+all existing fundraiser and time-window tests still work
+
+Final test result:
+
+18 passing
+
+```

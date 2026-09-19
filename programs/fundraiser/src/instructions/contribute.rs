@@ -8,6 +8,7 @@ use anchor_spl::token::{
 };
 
 use crate::{
+    events::MilestoneReached,
     state::{
         Contributor, 
         Fundraiser
@@ -64,11 +65,20 @@ impl<'info> Contribute<'info> {
             .checked_pow(self.mint_to_raise.decimals as u32)
             .ok_or(FundraiserError::ContributionTooSmall)?;
 
+
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
+
+        let max_contribution = self
+            .fundraiser
+            .amount_to_raise
+            .checked_mul(MAX_CONTRIBUTION_PERCENTAGE)
+            .ok_or(FundraiserError::ArithmeticOverflow)?
+            .checked_div(PERCENTAGE_SCALER)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
 
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= max_contribution,
             FundraiserError::ContributionTooBig
         );
 
@@ -80,12 +90,24 @@ impl<'info> Contribute<'info> {
             crate::FundraiserError::FundraiserEnded
         );
 
+        let new_contributor_amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
+
         // Check if the maximum contributions per contributor have been reached
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            self.contributor_account.amount <= max_contribution
+                && new_contributor_amount <= max_contribution,
             FundraiserError::MaximumContributionsReached
         );
+
+        let new_current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
 
         // Transfer the funds from the contributor to the vault.
         // As of Anchor 1.0 a CpiContext takes the program's *address*, not its
@@ -102,9 +124,43 @@ impl<'info> Contribute<'info> {
         transfer(cpi_ctx, amount)?;
 
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        self.fundraiser.current_amount = new_current_amount;
+        self.contributor_account.amount = new_contributor_amount;
 
-        self.contributor_account.amount += amount;
+        let milestones: [(u8, u8); 3] = [
+            (25, 1 << 0),
+            (50, 1 << 1),
+            (75, 1 << 2),
+        ];
+
+        for (percentage, bit) in milestones {
+            // Do nothing if this milestone already fired.
+            if self.fundraiser.milestones_fired & bit != 0 {
+                continue;
+            }
+
+            let current_scaled = self
+                .fundraiser
+                .current_amount
+                .checked_mul(PERCENTAGE_SCALER)
+                .ok_or(FundraiserError::ArithmeticOverflow)?;
+
+            let target_scaled = self
+                .fundraiser
+                .amount_to_raise
+                .checked_mul(percentage as u64)
+                .ok_or(FundraiserError::ArithmeticOverflow)?;
+
+            if current_scaled >= target_scaled {
+                self.fundraiser.milestones_fired |= bit;
+
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    percentage,
+                    current_amount: self.fundraiser.current_amount,
+                });
+            }
+        }
 
         Ok(())
     }
