@@ -3,6 +3,7 @@ import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
+import { assert } from "chai";
 
 describe("fundraiser", () => {
   // Configure the client to use the local cluster.
@@ -32,6 +33,76 @@ describe("fundraiser", () => {
       ...block,
     });
     return signature;
+  };
+
+  const makeContributor = async () => {
+    const keypair = anchor.web3.Keypair.generate();
+  
+    const sig = await provider.connection.requestAirdrop(
+      keypair.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
+    );
+    await confirm(sig);
+  
+    const ata = (
+      await getOrCreateAssociatedTokenAccount(
+        provider.connection,
+        wallet.payer,
+        mint,
+        keypair.publicKey
+      )
+    ).address;
+  
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      mint,
+      ata,
+      provider.publicKey,
+      10_000_000
+    );
+  
+    const contributorPda =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("contributor"),
+          fundraiser.toBuffer(),
+          keypair.publicKey.toBuffer(),
+        ],
+        program.programId
+      )[0];
+  
+    return {
+      keypair,
+      ata,
+      contributorPda,
+    };
+  };
+
+  const contributeAs = async (
+    keypair: anchor.web3.Keypair,
+    ata: anchor.web3.PublicKey,
+    contributorPda: anchor.web3.PublicKey,
+    amount: number
+  ) => {
+    const vault = getAssociatedTokenAddressSync(
+      mint,
+      fundraiser,
+      true
+    );
+  
+    return program.methods
+      .contribute(new anchor.BN(amount))
+      .accountsPartial({
+        contributor: keypair.publicKey,
+        fundraiser,
+        contributorAccount: contributorPda,
+        contributorAta: ata,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([keypair])
+      .rpc();
   };
 
   it("Test Preparation", async() => {
@@ -208,6 +279,123 @@ describe("fundraiser", () => {
     } catch (error) {
       console.log("\nRefund refused while the fundraiser is still running");
       console.log(error.error?.errorCode?.code ?? error.message);
+    }
+  });
+
+  it("Milestone - fires at 25 percent", async () => {
+    const contributor2 = await makeContributor();
+    const contributor3 = await makeContributor();
+  
+    // Existing fundraiser total should be 2 tokens.
+    // Add 3 + 3 => total becomes 8 / 30 tokens = 26.6%.
+    await contributeAs(
+      contributor2.keypair,
+      contributor2.ata,
+      contributor2.contributorPda,
+      3_000_000
+    );
+  
+    await contributeAs(
+      contributor3.keypair,
+      contributor3.ata,
+      contributor3.contributorPda,
+      3_000_000
+    );
+  
+    const fundraiserAccount =
+      await program.account.fundraiser.fetch(fundraiser);
+  
+    console.log(
+      "Milestones fired:",
+      fundraiserAccount.milestonesFired
+    );
+  
+    assert.equal(
+      fundraiserAccount.milestonesFired,
+      0b001
+    );
+  });
+
+  it("Milestone - fires exactly at 50 percent", async () => {
+    const contributor4 = await makeContributor();
+    const contributor5 = await makeContributor();
+    const contributor6 = await makeContributor();
+  
+    // Current total = 8 tokens.
+    // Add 3 + 3 + 1 = 7 tokens.
+    // New total = 15 / 30 = exactly 50%.
+  
+    await contributeAs(
+      contributor4.keypair,
+      contributor4.ata,
+      contributor4.contributorPda,
+      3_000_000
+    );
+  
+    await contributeAs(
+      contributor5.keypair,
+      contributor5.ata,
+      contributor5.contributorPda,
+      3_000_000
+    );
+  
+    await contributeAs(
+      contributor6.keypair,
+      contributor6.ata,
+      contributor6.contributorPda,
+      1_000_000
+    );
+  
+    const fundraiserAccount =
+      await program.account.fundraiser.fetch(fundraiser);
+  
+    assert.equal(
+      fundraiserAccount.currentAmount.toString(),
+      "15000000"
+    );
+  
+    assert.equal(
+      fundraiserAccount.milestonesFired,
+      0b011
+    );
+  });
+
+  it("Rejects contributor who exceeds personal contribution cap", async () => {
+    const abuser = await makeContributor();
+  
+    // 3 tokens = 10% of the 30-token target.
+    await contributeAs(
+      abuser.keypair,
+      abuser.ata,
+      abuser.contributorPda,
+      3_000_000
+    );
+  
+    try {
+      // Attempt another token from the same wallet.
+      await contributeAs(
+        abuser.keypair,
+        abuser.ata,
+        abuser.contributorPda,
+        1_000_000
+      );
+  
+      assert.fail(
+        "Expected contribution to fail with MaximumContributionsReached"
+      );
+    } catch (error: any) {
+      const errorCode =
+        error.error?.errorCode?.code;
+  
+      console.log(
+        "Abuse test error:",
+        errorCode
+      );
+  
+      assert.equal(
+        errorCode,
+        "MaximumContributionsReached"
+      );
     }
   });
 });

@@ -488,5 +488,52 @@ impl<'info> Refund<'info> {
 }
 ```
 
-In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
+In here, we will check if the fundrasing has already met the target and if it passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Milestone Feature
+
+### What It Does
+
+The fundraiser now tracks when the campaign reaches 25%, 50%, and 75% of its fundraising goal. Each milestone is recorded on-chain and emits a `MilestoneReached` event the first time it is reached.
+
+### How It Works
+
+The `Fundraiser` account stores a `milestones_fired: u8` bitmask.
+
+- Bit 0 represents 25%
+- Bit 1 represents 50%
+- Bit 2 represents 75%
+
+After each successful contribution, the program updates `current_amount` using checked arithmetic and calculates how many quarter milestones have been reached.
+
+```rust
+let quarters = current_amount
+    .checked_mul(4)?
+    / amount_to_raise;
+
+
+### What It Costs
+
+The milestone feature adds one `u8` field to the `Fundraiser` account to store which milestones have already fired.
+
+This increases the persistent account state by one byte and adds a small amount of compute to each contribution for:
+
+- checked arithmetic
+- calculating the current milestone level
+- checking up to three bit flags
+- emitting an event when a new milestone is reached
+
+The feature does not require any additional accounts or CPIs.
+
+### How I Would Attack It
+
+The main risks are duplicate milestone events, arithmetic overflow, and contributions that cross multiple milestones in a single transaction.
+
+A contribution can jump from below 25% to above 50% or 75%, so the program must check every milestone that has been crossed instead of checking only one threshold.
+
+The `milestones_fired` bitmask prevents the same milestone from firing more than once.
+
+The milestone calculations use checked integer arithmetic to avoid overflow, and the tests cover threshold behavior and invalid contribution attempts.
