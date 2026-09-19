@@ -490,3 +490,22 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+
+---
+
+## Feature: NFT Receipt on First Contribution
+
+### What it does
+On a contributor's first contribution to a campaign, the program mints them a one-of-one receipt NFT. The receipt is a 0-decimal SPL token with a supply of 1, held in the contributor's wallet. It proves they backed this campaign.
+
+### How it works
+A new PDA `[b"receipt", fundraiser, contributor]` holds the mint. The mint's authority is the fundraiser PDA. The `Contributor` account gains a `receipt_minted: bool` field. Inside `contribute`, after the transfer and total update, an `if !receipt_minted` guard mints 1 token to the contributor's receipt ATA, then sets the flag. The flag makes the mint idempotent — no matter how many times a contributor contributes, the receipt mints exactly once.
+
+### What it costs
+~0.00146 SOL rent for the mint account, ~0.00204 SOL for the receipt ATA, paid by the contributor. Roughly +15k compute units for the `init_if_needed` + `mint_to` on the first contribution, ~0 on subsequent contributions (the guard skips the block).
+
+### My approach
+The mint authority remains the fundraiser PDA rather than being set to `None`. This is because `init_if_needed` re-validates the `mint::authority` constraint on every contribution, and burning the authority after the first mint causes every subsequent contribution to fail with `ConstraintMintMintAuthority`. The one-of-one property is enforced by the `receipt_minted` flag, not by burning the authority. An attacker cannot mint additional receipts because the only instruction that calls `mint_to` is `contribute`, guarded by `receipt_minted`, and the mint's authority is a PDA only the program can sign for. The honest weakness: the authority technically still exists, so a future program upgrade could theoretically mint more. This is a promise, not a cryptographic guarantee. We chose it over a broken contribute path.
+
+On refund, the receipt stays in the contributor's wallet. Burning is unenforceable — a contributor can transfer the receipt to another wallet before calling `refund`, defeating any burn-on-refund logic. We chose to leave it as a historical record rather than a rule we cannot enforce.

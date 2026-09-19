@@ -1,11 +1,12 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{
+        self, mint_to,
+        Mint, MintTo,
+        Token, TokenAccount, Transfer,
+    },
+}; // CHANGED TO ADD NFT FEAT 
 
 use crate::{
     state::{
@@ -14,7 +15,8 @@ use crate::{
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    PERCENTAGE_SCALER, SECONDS_TO_DAYS,
+    RECEIPT_SEED,
 };
 
 #[derive(Accounts)]
@@ -49,7 +51,28 @@ pub struct Contribute<'info> {
         associated_token::authority = fundraiser
     )]
     pub vault: Account<'info, TokenAccount>,
+    // ---- receipt accounts (NEW) ---- // ADDED FOR NEW NFT FEAT
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        mint::decimals = 0,
+        mint::authority = fundraiser,
+        mint::freeze_authority = fundraiser,
+        seeds = [RECEIPT_SEED, fundraiser.key().as_ref(), contributor.key().as_ref()],
+        bump,
+    )]
+    pub receipt_mint: Account<'info, Mint>,
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        associated_token::mint = receipt_mint,
+        associated_token::authority = contributor,
+    )]
+    pub receipt_ata: Account<'info, TokenAccount>,
+    // --------------------------------
+
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,  // ADDED FOR NEW NFT FEAT
     pub system_program: Program<'info, System>,
 }
 
@@ -99,13 +122,50 @@ impl<'info> Contribute<'info> {
         let cpi_ctx = CpiContext::new(self.token_program.key(), cpi_accounts);
 
         // Transfer the funds from the contributor to the vault
-        transfer(cpi_ctx, amount)?;
+        token::transfer(cpi_ctx, amount)?;
 
+        
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // ADDED FOR NEW NFT FEAT
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ContributionTooBig)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ContributionTooBig)?;
+
+        // ---- mint the receipt, once (NEW) ----
+        if !self.contributor_account.receipt_minted {
+            let signer_seeds: &[&[&[u8]]] = &[&[
+                b"fundraiser",
+                self.fundraiser.maker.as_ref(),
+                &[self.fundraiser.bump],
+            ]];
+
+            // Mint exactly 1 receipt token to the contributor.
+            mint_to(
+                CpiContext::new_with_signer(
+                    self.token_program.key(),
+                    MintTo {
+                        mint: self.receipt_mint.to_account_info(),
+                        to: self.receipt_ata.to_account_info(),
+                        authority: self.fundraiser.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                1,
+            )?; 
+
+            self.contributor_account.receipt_minted = true;
+        }
 
         Ok(())
     }
 }
+
+
