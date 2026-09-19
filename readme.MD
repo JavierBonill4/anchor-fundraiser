@@ -24,6 +24,38 @@ This example demonstrates how to create a fundraising for SPL Tokens.
 
 In this example, a user will be able to create a fundraiser account, where he will be specify the mint he wants to collect and the fundraising target.
 
+## Added feature: contribution milestones
+
+### What it does
+
+The fundraiser now records one-way campaign milestones at 25%, 50%, and 75% of the target amount. When a contribution moves the campaign across one of those marks, the program sets a bit on the `Fundraiser` account and emits a `MilestoneReached` event. A frontend or indexer can use the event for live notifications, while the on-chain bitmask proves which milestones have already been reached.
+
+### How it works
+
+The `Fundraiser` account has one appended field:
+
+```rust
+pub milestones_fired: u8, // bit 0 = 25%, bit 1 = 50%, bit 2 = 75%
+```
+
+`initialize` starts the bitmask at `0`. At the end of `contribute`, after the token transfer succeeds and `current_amount` is updated with checked arithmetic, the program computes:
+
+```rust
+current_amount.checked_mul(4)? / amount_to_raise
+```
+
+It then loops over the satisfied quarters, sets any missing milestone bit, and emits `MilestoneReached { fundraiser, quarter, amount }`. The check is based on the total reached, not on landing exactly on a boundary, so it still works when a single contribution crosses a mark.
+
+### What it costs
+
+Rent increases by one byte on the `Fundraiser` PDA because the feature appends a single `u8`. There are no new accounts, no new CPIs, and no extra signer. The compute cost is a small constant amount at the end of `contribute`: one checked multiplication, a division, and a loop over at most three milestones. Crossing a new milestone also writes the bitmask and emits one event log.
+
+### How I would attack it
+
+Milestones are deliberately one-way. If a fundraiser later fails and contributors refund, `current_amount` can fall below a milestone while `milestones_fired` still remembers that it was reached once. I chose that because flickering milestones are confusing and easy to game from a UI perspective, but a frontend should read `current_amount` or the vault balance for the live percentage.
+
+The event log is also not a source of truth by itself. Logs are useful for indexers, but the on-chain bitmask is the enforceable record. A user cannot forge the bitmask by crafting a custom transaction because it is written only after the program validates the contribution and updates the fundraiser total.
+
 ---
 
 ## Let's walk through the architecture:
@@ -41,6 +73,7 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub milestones_fired: u8,
 }
 ```
 
@@ -59,6 +92,8 @@ pub struct Fundraiser {
 - duration: the timeframe to collect all the contributions (in days) 
 
 - bump: since our Fundraiser account will be a PDA (Program Derived Address), we will store the bump of the account
+
+- milestones_fired: a bitmask that records whether the 25%, 50%, and 75% contribution milestones have been reached
 
 We use InitSpace derive macro to implement the space triat that will calculate the amount of space that our account will use on-chain (without taking the anchor discriminator into consideration)
 
