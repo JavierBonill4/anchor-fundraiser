@@ -169,13 +169,33 @@ def main() -> int:
 
     passing = sum(int(m.group(1)) for m in PASSING.finditer(out))
     failing = sum(int(m.group(1)) for m in FAILING.finditer(out))
+
+    # Anchor 1.0 replaced solana-test-validator with surfpool as the backend
+    # for `anchor test`, and surfpool is a separate install. When it is
+    # missing the command dies before a single test runs — mocha prints
+    # nothing, and reporting that as "your tests failed" blames the learner
+    # for our toolchain.
+    #
+    # Detect it by the absence of ANY test result rather than by matching an
+    # error string, so a different validator failure is caught too, and retry
+    # on the legacy validator the Solana toolchain still ships.
+    if code != 0 and passing == 0 and failing == 0:
+        notes.append(
+            "The default validator produced no test output, so the suite was "
+            "re-run on the legacy validator."
+        )
+        code, out = run(["anchor", "test", "--skip-build", "--validator", "legacy"])
+        passing = sum(int(m.group(1)) for m in PASSING.finditer(out))
+        failing = sum(int(m.group(1)) for m in FAILING.finditer(out))
+
     wanted = base["test_count"] + base["new_tests_required"]
 
     if passing == 0 and failing == 0:
         notes.append(
-            "No test results were produced. `anchor test` ran but mocha "
-            "reported nothing — check that your tests are under tests/ and "
-            "that `yarn install` succeeds."
+            "No test results were produced on either validator. `anchor test` "
+            "ran but mocha reported nothing — check that your tests are under "
+            "tests/, that `yarn install` succeeds, and that `anchor build` "
+            "produced target/types/fundraiser.ts for them to import."
         )
     elif failing > 0:
         notes.append(f"{failing} test(s) failing. The suite has to be green.")
