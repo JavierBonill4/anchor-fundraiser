@@ -80,6 +80,12 @@ impl<'info> Contribute<'info> {
             crate::FundraiserError::FundraiserEnded
         );
 
+        // Check if the fundraiser was cancelled
+        require!(
+            !self.fundraiser.cancelled,
+            crate::FundraiserError::FundraiserCancelled
+        );
+
         // Check if the maximum contributions per contributor have been reached
         require!(
             (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)

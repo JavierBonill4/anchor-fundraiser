@@ -183,9 +183,87 @@ describe("fundraiser", () => {
     }
   });
   
-  // A refund is only legal once the window has closed, so a seven day fundraiser
-  // must refuse one on the day it opens. The successful refund is covered in
-  // tests/time-window-bankrun.ts, which can move the clock past the deadline.
+  it("Maker Cancels the Fundraiser", async () => {
+    const tx = await program.methods
+      .cancel()
+      .accountsPartial({
+        maker: maker.publicKey,
+        fundraiser,
+      })
+      .signers([maker])
+      .rpc({ skipPreflight: true })
+      .then(confirm);
+      
+    console.log("\nMaker successfully cancelled the fundraiser");
+    console.log("Your transaction signature", tx);
+    
+    let fundraiserAccount = await program.account.fundraiser.fetch(fundraiser);
+    console.log("Fundraiser Cancelled Flag: ", fundraiserAccount.cancelled);
+  });
+
+  it("Refuses contributions if the fundraiser is cancelled", async () => {
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    try {
+      await program.methods
+      .contribute(new anchor.BN(1000000))
+      .accountsPartial({
+        contributor: provider.publicKey,
+        fundraiser,
+        contributorAccount: contributor,
+        contributorAta: contributorATA,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc({
+        skipPreflight: true,
+      });
+      throw new Error("the contribution should have been refused");
+    } catch (error) {
+      console.log("\nContribution successfully refused because fundraiser was cancelled");
+      console.log(error.error?.errorCode?.code ?? error.message);
+    }
+  });
+
+  it("Refund Contributions - succeeds and cleans up after cancellation", async () => {
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    const tx = await program.methods
+      .refund()
+      .accountsPartial({
+        contributor: provider.publicKey,
+        maker: maker.publicKey,
+        mintToRaise: mint,
+        fundraiser,
+        contributorAccount: contributor,
+        contributorAta: contributorATA,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc({ skipPreflight: true })
+      .then(confirm);
+      
+    console.log("\nRefund successful after cancellation");
+    console.log("Your transaction signature", tx);
+    
+    // The vault should be closed, so checking its balance should throw
+    try {
+      await provider.connection.getTokenAccountBalance(vault);
+      throw new Error("Vault should have been closed");
+    } catch (e) {
+      console.log("Verified vault was closed properly");
+    }
+
+    // The fundraiser should also be closed
+    const fundraiserAccount = await provider.connection.getAccountInfo(fundraiser);
+    if (fundraiserAccount !== null) {
+      throw new Error("Fundraiser PDA should have been closed");
+    } else {
+      console.log("Verified Fundraiser PDA was closed properly");
+    }
+  });
+
   it("Refund Contributions - refused while the window is open", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 

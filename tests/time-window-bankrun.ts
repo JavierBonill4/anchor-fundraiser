@@ -258,7 +258,14 @@ describe("fundraiser — the window closes (bankrun)", () => {
         .instruction(),
     ]);
 
-    assert.strictEqual(await tokenBalance(vault), 0n, "the vault should be empty");
+    // The vault should be closed because it was the last refund
+    try {
+      await tokenBalance(vault);
+      assert.fail("The vault should have been closed");
+    } catch (e: any) {
+      assert.match(e.message, /should exist/, "vault should be closed");
+    }
+
     assert.strictEqual(
       await tokenBalance(contributorAta),
       BigInt(10 * CONTRIBUTION),
