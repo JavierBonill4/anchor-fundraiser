@@ -5,10 +5,10 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-fundraiser = "Eoiuq1dXvHxh6dLx3wh9gj8kSAUpga11krTrbfF5XYsC"
+fundraiser = "8tNkFQaUao8jz9Px2XSCe6aUrcU5uo29b54tAJSTL64S"
 
 [programs.localnet]
-fundraiser = "7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW"
+fundraiser = "8tNkFQaUao8jz9Px2XSCe6aUrcU5uo29b54tAJSTL64S"
 
 [provider]
 cluster = "localnet"

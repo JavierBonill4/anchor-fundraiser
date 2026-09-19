@@ -13,7 +13,8 @@ use crate::{
         Fundraiser
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
+    CAP_TIER_ONE_PERCENTAGE, CAP_TIER_TWO_PERCENTAGE, CAP_TIER_THREE_PERCENTAGE,
+    DEEP_THRESHOLD_PERCENTAGE, HALFWAY_THRESHOLD_PERCENTAGE,
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
 };
 
@@ -54,6 +55,43 @@ pub struct Contribute<'info> {
 }
 
 impl<'info> Contribute<'info> {
+    /// The largest a single contributor may hold or add in one call, as a
+    /// function of how full the vault already is.
+    ///
+    /// Before the vault is half full the original 10% cap applies. Once a
+    /// campaign has proven itself, a bigger backer is welcome: the cap grows
+    /// to 20% past the halfway mark and 30% past three quarters.
+    ///
+    /// The tier is derived from `current_amount` *before* this contribution is
+    /// applied, so a contribution that crosses a threshold still has to respect
+    /// the tier it leaves behind - it earns the higher tier for the campaign's
+    /// next contribution, not for itself.
+    fn contribution_cap(&self) -> Result<u64> {
+        let raised_percent = self
+            .fundraiser
+            .current_amount
+            .checked_mul(PERCENTAGE_SCALER)
+            .and_then(|v| v.checked_div(self.fundraiser.amount_to_raise))
+            .ok_or(FundraiserError::ContributionCapOverflow)?;
+
+        let cap_percent = if raised_percent < HALFWAY_THRESHOLD_PERCENTAGE {
+            CAP_TIER_ONE_PERCENTAGE
+        } else if raised_percent < DEEP_THRESHOLD_PERCENTAGE {
+            CAP_TIER_TWO_PERCENTAGE
+        } else {
+            CAP_TIER_THREE_PERCENTAGE
+        };
+
+        let cap = self
+            .fundraiser
+            .amount_to_raise
+            .checked_mul(cap_percent)
+            .and_then(|v| v.checked_div(PERCENTAGE_SCALER))
+            .ok_or(FundraiserError::ContributionCapOverflow)?;
+
+        Ok(cap)
+    }
+
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
 
         // Check that the contribution is at least one whole token.
@@ -66,11 +104,11 @@ impl<'info> Contribute<'info> {
 
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
-        // Check if the amount to contribute is less than the maximum allowed contribution
-        require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
-            FundraiserError::ContributionTooBig
-        );
+        // The per-contributor cap scales with how far the campaign has got.
+        let cap = self.contribution_cap()?;
+
+        // Check if the amount to contribute is less than the maximum allowed in a single call.
+        require!(amount <= cap, FundraiserError::ContributionTooBig);
 
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
@@ -80,10 +118,14 @@ impl<'info> Contribute<'info> {
             crate::FundraiserError::FundraiserEnded
         );
 
-        // Check if the maximum contributions per contributor have been reached
+        // Check that the cumulative total for this contributor stays within the cap
+        let new_total = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ContributionCapOverflow)?;
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            self.contributor_account.amount <= cap && new_total <= cap,
             FundraiserError::MaximumContributionsReached
         );
 

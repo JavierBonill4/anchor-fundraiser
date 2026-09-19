@@ -490,3 +490,141 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+# Add-on: Tiered Contribution Cap
+
+## What it does
+
+Originally a single contributor could never hold or give more than 10% of the
+target, no matter how the campaign was going. This add-on makes that cap grow
+as the campaign proves itself:
+
+| Vault reached (of target) | per-contributor cap |
+| --- | --- |
+| less than 50% | 10% of the target (the original rule) |
+| 50% to below 75% | 20% of the target |
+| 75% and up | 30% of the target |
+
+A backer who joined a small, unproven campaign is welcome to help it cross the
+halfway mark; a bigger backer is only let in once the campaign has actually got
+there. Two caps stay enforced on-chain in `contribute`:
+
+- **in one call** - `amount <= cap`, else `ContributionTooBig`
+- **in total** - the contributor's cumulative `amount <= cap`, else `MaximumContributionsReached`
+
+## How it works
+
+- **No new state.** The tier is not stored, it is *derived*: `contribute`
+  computes `raised_percent = current_amount * 100 / amount_to_raise`, picks the
+  tier, and caps at `amount_to_raise * tier / 100`. There is no flag to go
+  stale and no account to pay rent for.
+- **Where it fires:** at the top of `contribute`, replacing the constants-based
+  cap. Nothing else changes - `initialize`, `check_contributions` and `refund`
+  are untouched.
+- **The tier is read before the contribution lands.** A contribution that
+  crosses 50% is still held to the tier it is leaving (10%); it earns the
+  higher tier for the *next* contribution, not for itself. This keeps a single
+  large transaction from buying its way into a tier the vault has not yet
+  earned, and it is what makes the boundary test exact (`>` vs `>=`).
+- **All money math is checked.** `checked_mul`, `checked_div`, `checked_add`,
+  surfaced as a new `ContributionCapOverflow` error rather than a panicking
+  wrap.
+
+## What it costs
+
+- **Rent:** nothing new. No account, no field, no seed. The `Fundraiser` and
+  `Contributor` layouts are byte-for-byte unchanged.
+- **Compute:** two `u64` multiply-then-divide pairs per contribution in place of
+  one. The measured cost of a `contribute` instruction went from ~23–26k to
+  ~30k compute units of 200k available - a few tens of units, nothing to budget
+  around.
+
+## How you would attack it
+
+1. **Buy your way past the gatekeeper with fresh wallets.** The cap is
+   per-PDA, not per-human, so one wealthy actor can split across many fresh
+   wallets and each gets a full cap. That weakness predates this add-on (the
+   original 10% cap had it too) - this feature does not make it better or
+   worse, but it does raise the *value* of doing so, since late in a campaign a
+   whale can put far more through a crowd of wallets than 10%.
+2. **DoS the threshold** - contribute up to 49.99% and (illegally) nothing
+   forced. A funder who does not want the 20% tier to unlock simply does not
+   top the vault past 50%, and no one else can either without exceeding the
+   current 10% per-person cap. This is a liveness nuisance, not a theft: the
+   campaign still finishes and payouts are unaffected, but a patient whale can
+   keep *other* backers small. The honest answer is that any cap scheme with a
+   threshold has this shape.
+3. **The pre-semantics race.** Because the tier is derived from
+   `current_amount` *before* the transfer, an oversized contribution intended
+   to cross 50% in the same transaction simply fails - good. But another
+   contributor can front-run it: contribute just enough to cross, then let
+   their own bigger contribution follow. That is the designed behaviour, not a
+   bug; the "exploit" is just coordination.
+4. **Refund collapse.** `refund` reduces `current_amount`, so after refunds
+   the derived tier *can* shrink. That is honest (the vault really is smaller)
+   rather than a bug, and it is nearly moot: refunds are only legal once the
+   window has closed, at which point no further contributions exist, so during
+   the campaign the cap only ever grows. A stored milestone flag would need a
+   one-way rule and a paragraph like this one; a derived value cannot
+disagree with the vault, which is why the tier is computed rather than
+    stored.
+
+---
+
+# Live demo on devnet
+
+The add-on is deployed to devnet and comes with a self-contained demo client
+that walks the whole tiered-cap scenario against the live program - no local
+validator, no `anchor test`.
+
+- **Program id (devnet):** `8tNkFQaUao8jz9Px2XSCe6aUrcU5uo29b54tAJSTL64S`
+- **Cluster:** `https://api.devnet.solana.com` (override with `RPC_URL`)
+- **Wallet:** `~/.config/solana/id.json` by default (override with
+  `KEYPAIR_PATH`); must hold a little SOL for fees and rent.
+
+```bash
+anchor build                # refresh target/idl/fundraiser.json
+yarn ts-node scripts/demo-deployed.ts
+```
+
+Each run creates a **fresh** mint and campaign, so it is fully repeatable:
+
+1. mint + fundraiser (30 tokens / 7 days) are created
+2. tier 1: vault below 50% caps everyone at 10% - A's second contribution is
+   rejected with `MaximumContributionsReached`
+3. A's refund while the window is open is rejected with `FundraiserNotEnded`
+4. B, C, D, E fill the vault to exactly 50%
+5. tier 2 unlocks (10% -> 20%): A reaches exactly 6t, F lands a single 4t
+   that the old cap would have blocked, and F's 7t total is rejected
+6. tier 3 unlocks at 75% (20% -> 30%): G lands exactly 9t, with a 10t
+   attempt rejected first
+7. the maker sweeps the vault, the target is met, and the `fundraiser` PDA
+   is closed
+
+Every step prints `[OK]`/`[!!]` plus the vault balance so the result is
+auditable.
+
+## Recovering the SOL the demo funds
+
+The demo moves small amounts of devnet SOL into throwaway wallets (0.05 SOL
+to the maker + 0.02 SOL to each of 7 contributors). Their seeds are written to
+`scripts/.demo-wallets.json` (gitignored) as each wallet is created, and the
+balance is returned to your authority wallet automatically:
+
+- at the end of a successful run,
+- in the `main().catch(...)` error handler, and
+- in an `uncaughtException` handler (the public devnet RPC occasionally
+  throws a hard `429` that escapes the promise chain).
+
+You can also recover manually at any time:
+
+```bash
+RECOVER=1 yarn ts-node scripts/demo-deployed.ts
+```
+
+Only wallets that actually hold SOL (`>= 0.0001`) are touched, and the
+transfer moves the full balance so the throwaway account is closed. Because
+the seeds are persisted, even a run killed mid-way keeps its wallets
+recoverable on the next invocation.
