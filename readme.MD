@@ -490,3 +490,102 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Milestone unlocks (Daniel's feature)
+
+**What it is, who it benefits, what a dishonest user would try.** The
+fundraiser already tracks a running total, but nothing on-chain marks the
+difference between a campaign at 10% and one at 60% — a front end has to
+poll the vault balance and interpret it itself. This feature makes each
+quarter of progress a permanent, on-chain fact: the moment the vault
+crosses 25%, 50%, or 75% of the target, the program marks it and emits an
+event. A front end can subscribe instead of polling. There's no reward or
+payout attached to a milestone, so there's nothing for a dishonest user to
+extract directly — the interesting failure mode is a stale or manipulated
+*signal*, not stolen funds (see "How you would attack it" below).
+
+### What it does
+
+A `Fundraiser` account now carries one extra byte, `milestones_fired: u8`,
+used as a bitmask: bit 0 = 25% reached, bit 1 = 50%, bit 2 = 75%. Every
+`contribute` call checks whether the new running total has crossed any
+mark that hasn't fired yet, sets the corresponding bit, and emits a
+`MilestoneReached { fundraiser, milestone }` event (`milestone` is 1, 2,
+or 3).
+
+### How it works
+
+- **State:** `milestones_fired: u8` appended to the end of `Fundraiser`
+  (never inserted — a field inserted in the middle would shift every byte
+  after it and silently corrupt existing accounts' layout). `#[derive(InitSpace)]`
+  recalculates the account size automatically.
+- **Where it fires:** inline, at the end of `contribute`, right after
+  `current_amount` and `contributor_account.amount` are updated with
+  `checked_add`. This is a moment, not a new instruction — nobody has to
+  claim a milestone, it's just a fact about the campaign's state, and
+  `contribute` is the only place that ever moves the total upward.
+- **The jump case:** the check is "which milestones are now satisfied and
+  haven't fired yet," computed from where the total *is* now
+  (`current_amount * 4 / amount_to_raise`, multiply before divide to keep
+  precision), not "did this contribution land exactly on a boundary." A
+  loop over `0..quarters.min(3)` handles a contribution that crosses two
+  marks in one transaction (e.g. 20% -> 60%) correctly, firing both. In
+  practice a single contribution is capped at 10% of the target elsewhere
+  in `contribute`, so it can never actually skip a whole quarter — but the
+  loop is written to be correct regardless, since that cap could change.
+- **The once-only guard:** each bit is checked before it's set
+  (`if self.fundraiser.milestones_fired & flag == 0`), so calling
+  `contribute` many times near the same threshold never re-fires an
+  already-set mark.
+- **Money math:** all arithmetic on token amounts uses `checked_add` /
+  `checked_mul`, mapped to a new `FundraiserError::Overflow` on failure —
+  no bare `+`, `-`, or `*` on amounts.
+
+### What it costs
+
+- **Rent:** +1 byte on `Fundraiser`'s account data (one byte times the
+  rent-per-byte rate — negligible, well under a fraction of a lamport in
+  practice at current rates, and it's paid once by the maker at
+  `initialize`, same as the rest of the account).
+- **Accounts:** none added. No new PDA, no new instruction, no new signer.
+- **Compute:** the milestone block adds one `checked_mul`, one integer
+  divide, and up to three cheap bitwise checks per `contribute` call
+  (`emit!` only actually logs when a bit newly flips, which happens at
+  most 3 times ever per campaign). This is a small, bounded addition on
+  top of `contribute`'s existing checks and CPI transfer — not a
+  meaningfully different order of magnitude.
+
+### How I would attack it
+
+The genuine soft spot: **`current_amount` can fall after a `refund`, but
+`milestones_fired` never un-sets a bit.** A campaign that reached 50% and
+then had contributors leave right before the deadline still reports
+"50% reached" forever, even though the vault no longer holds enough to
+justify that. I chose this on purpose — a milestone flag that can flicker
+on and off is a worse signal for a front end to build on than one that's
+a stable, one-way historical fact — but it means `milestones_fired` is
+**not** a live percentage indicator. A front end that needs "what % is
+this campaign at right now" must read `current_amount`, not the flags.
+
+A second, narrower risk: if the per-contributor 10% cap were ever removed
+or raised significantly elsewhere in the program, a single very large
+contribution could, in principle, jump straight past all three marks in
+one transaction. The loop already handles this correctly (it fires every
+newly-crossed mark, not just the nearest one), so this isn't actually
+exploitable as written — but it's the kind of assumption ("no single
+contribution can skip a quarter") that's currently enforced by a
+*different* part of the program, not by this feature itself, and would be
+worth re-checking if that cap ever changes.
+
+### Testing
+
+`anchor test` — all 11 original tests still pass, plus three new tests in
+`tests/milestones.ts` covering: the happy path (a contribution that
+crosses 25% sets the bit), the boundary (staying one unit below the mark
+leaves `milestones_fired` at 0; the contribution that lands exactly on it
+sets bit 0), and the abuse/idempotency case (a further contribution inside
+the same quarter does not re-fire an already-set bit). All three assert on
+the on-chain `Fundraiser.milestones_fired` state, not just on the
+transaction succeeding.

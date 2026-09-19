@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW");
+declare_id!("Ahh6jLo6b55mUdVyi6P6AP3KR9KUiQRsyCYxHqYshYk6");
 
 mod state;
 mod instructions;
@@ -10,6 +10,12 @@ mod constants;
 use instructions::*;
 use error::*;
 pub use constants::*;
+
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub milestone: u8, // 1 = 25%, 2 = 50%, 3 = 75%
+}
 
 #[program]
 pub mod fundraiser {

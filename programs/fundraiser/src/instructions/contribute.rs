@@ -1,20 +1,21 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
+    Mint,
+    transfer,
+    Token,
+    TokenAccount,
     Transfer
 };
 
 use crate::{
     state::{
-        Contributor, 
+        Contributor,
         Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    }, FundraiserError,
+    ANCHOR_DISCRIMINATOR,
+    MAX_CONTRIBUTION_PERCENTAGE,
+    PERCENTAGE_SCALER, SECONDS_TO_DAYS,
+    MilestoneReached,
 };
 
 #[derive(Accounts)]
@@ -68,7 +69,7 @@ impl<'info> Contribute<'info> {
 
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER,
             FundraiserError::ContributionTooBig
         );
 
@@ -101,10 +102,43 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Update the fundraiser and contributor accounts with the new amounts.
+        // checked_add: a bare `+` on token amounts is not allowed to move money.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
+        // Milestone unlocks: fire an event the first time the campaign crosses
+        // each quarter of its target. Computed from where the total *is* now,
+        // not from what changed, so a contribution that jumps two quarters at
+        // once (e.g. 20% -> 60%) fires both marks in the same transaction.
+        // Multiply-before-divide keeps precision; checked_mul guards the
+        // multiplication per the same money-math rule as above.
+        let quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            / self.fundraiser.amount_to_raise;
+
+        for i in 0..quarters.min(3) {
+            let flag = 1u8 << i;
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    milestone: (i + 1) as u8,
+                });
+            }
+        }
 
         Ok(())
     }
