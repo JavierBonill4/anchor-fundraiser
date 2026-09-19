@@ -1,7 +1,16 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
-import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
+import { assert } from "chai";
+import { 
+  ASSOCIATED_TOKEN_PROGRAM_ID, 
+  TOKEN_PROGRAM_ID,
+  createMint,
+  createMintToInstruction,
+  getAssociatedTokenAddressSync,
+  getMint,
+  getOrCreateAssociatedTokenAccount,
+  mintTo } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
 
 describe("fundraiser", () => {
@@ -24,6 +33,12 @@ describe("fundraiser", () => {
   const fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
 
   const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+
+  const receiptMint = anchor.web3.PublicKey.findProgramAddressSync(
+  [Buffer.from("receipt"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+  program.programId)[0];
+
+  const receiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey);
 
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
@@ -86,6 +101,9 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint,
+      receiptAta,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       tokenProgram: TOKEN_PROGRAM_ID,
     })
     .rpc({
@@ -100,6 +118,17 @@ describe("fundraiser", () => {
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
   });
+
+  it("Receipt - minted on first contribution", async () => {
+  const mintInfo = await getMint(provider.connection, receiptMint);
+  assert.strictEqual(mintInfo.supply, 1n, "receipt supply should be exactly 1");
+  assert.strictEqual(mintInfo.decimals, 0, "receipt should have 0 decimals");
+  assert.strictEqual(mintInfo.mintAuthority?.toBase58(), fundraiser.toBase58(), "mint authority should remain the fundraiser PDA");
+
+  const receiptBalance = await provider.connection.getTokenAccountBalance(receiptAta);
+  assert.strictEqual(receiptBalance.value.amount, "1", "contributor should hold exactly 1 receipt token");
+});
+
   it("Contribute to Fundraiser", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
@@ -111,6 +140,9 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint,
+      receiptAta,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       tokenProgram: TOKEN_PROGRAM_ID,
     })
     .rpc({
@@ -124,6 +156,28 @@ describe("fundraiser", () => {
 
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
+  });
+
+  it("Receipt - repeat contribution does not mint a second one", async () => {
+    const mintInfo = await getMint(provider.connection, receiptMint);
+    assert.strictEqual(mintInfo.supply, 1n, "supply must still be 1 after a second contribution");
+  });
+
+  it("Receipt - hand-crafted mint_to is rejected once authority is revoked", async () => {
+    try {
+      const ix = createMintToInstruction(
+        receiptMint,
+        receiptAta,
+        provider.publicKey, // the wallet, not the fundraiser PDA — it can't sign for the mint anyway
+        1
+      );
+      const tx = new anchor.web3.Transaction().add(ix);
+      await provider.sendAndConfirm(tx);
+      assert.fail("expected the mint to be rejected — authority should be revoked");
+    } catch (error: any) {
+      console.log("\nHand-crafted mint correctly rejected");
+      console.log(error.message ?? error);
+    }
   });
 
   it("Contribute to Fundraiser - Robustness Test", async () => {
@@ -138,6 +192,9 @@ describe("fundraiser", () => {
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,
+        receiptMint,
+        receiptAta,
+        associatedTokenProgram:ASSOCIATED_TOKEN_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .rpc({
@@ -148,7 +205,7 @@ describe("fundraiser", () => {
       console.log("\nContributed to fundraiser", tx);
       console.log("Your transaction signature", tx);
       console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-    } catch (error) {
+    } catch (error: any) {
       console.log("\nError contributing to fundraiser");
       console.log(error.msg);
     }
@@ -177,7 +234,7 @@ describe("fundraiser", () => {
       console.log("\nChecked contributions");
       console.log("Your transaction signature", tx);
       console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-    } catch (error) {
+    } catch (error: any) {
       console.log("\nError checking contributions");
       console.log(error.msg);
     }
@@ -205,7 +262,7 @@ describe("fundraiser", () => {
       })
       .rpc();
       throw new Error("the refund should have been refused");
-    } catch (error) {
+    } catch (error: any) {
       console.log("\nRefund refused while the fundraiser is still running");
       console.log(error.error?.errorCode?.code ?? error.message);
     }
