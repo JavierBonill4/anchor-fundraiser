@@ -17,5 +17,11 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("The maker fee exceeds the maximum allowed")]
+    InvalidMakerFee,
+    #[msg("The maker cannot also be the beneficiary")]
+    InvalidBeneficiary,
+    #[msg("Token arithmetic overflow")]
+    ArithmeticOverflow,
 }
