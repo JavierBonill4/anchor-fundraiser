@@ -1,0 +1,112 @@
+# Solana Summer grader — Assignment 04, Fundraiser.
+#
+# SEALED. The submission checker compares this file's blob SHA against the
+# upstream copy. Editing it fails your submission before anything is read.
+#
+# It runs in YOUR fork, on YOUR free Actions minutes. Nothing here uploads
+# your source anywhere, and the site never executes it — it only reads the
+# result this job publishes.
+#
+# This assignment is open-ended, so there is no canonical suite. grade.py
+# checks four things instead: it builds, your tests are green and there are
+# more of them, the IDL gained surface, and you declared an error.
+
+name: verify
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per branch at a time. Not cancel-in-progress: a run that is already
+# going may be the one somebody is about to submit, and cancelling it makes
+# that commit ungradeable until they dispatch it again by hand.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    # Grade forks, not the starter.
+    #
+    # The starter has no feature, by definition, so grading it would park a
+    # permanent red X on the repository every student clones — which reads as
+    # "the starter is broken" and generates support questions that have
+    # nothing to do with anybody's code. Dispatch it by hand from the Actions
+    # tab when you want to smoke-test the grader against the upstream.
+    if: github.event.repository.fork || github.event_name == 'workflow_dispatch'
+
+    env:
+      CHALLENGE_ID: fundraiser-feature
+      PROGRAM_SO: target/deploy/fundraiser.so
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Solana toolchain
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      # `anchor test` starts a validator and deploys to it, which needs a
+      # keypair. Runners have none.
+      - name: Create a throwaway keypair
+        run: solana-keygen new --no-bip39-passphrase -s -o "$HOME/.config/solana/id.json"
+
+      - name: Install Anchor
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          avm install 1.1.2
+          avm use 1.1.2
+
+      - name: Install JS dependencies
+        run: yarn install --frozen-lockfile || yarn install
+
+      # grade.py owns `anchor keys sync`, `anchor build` and `anchor test`, so
+      # a build failure still produces a result.json that says so rather than
+      # a red run with nothing in it.
+      - name: Grade
+        run: python3 grader/grade.py
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: solana-summer-result
+          path: result.json
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f result.json ]; then
+            python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r = json.load(open("result.json"))
+          c = r["canonical"]
+          print("## Solana Summer — " + r["challenge"])
+          print()
+          print(f"**Gates met:** {c['passed']}/{c['total']}")
+          print()
+          if r["notes"]:
+              print("### Notes")
+              for n in r["notes"]:
+                  print(f"- {n}")
+          PY
+          fi
