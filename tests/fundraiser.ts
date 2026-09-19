@@ -3,6 +3,7 @@ import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
+import { strict as assert } from "assert";
 
 describe("fundraiser", () => {
   // Configure the client to use the local cluster.
@@ -73,6 +74,286 @@ describe("fundraiser", () => {
 
     console.log("\nInitialized fundraiser Account");
     console.log("Your transaction signature", tx);
+  });
+
+  it("Starts with no milestones fired", async () => {
+    const fundraiserAccount = await program.account.fundraiser.fetch(fundraiser);
+
+    assert.equal(
+      fundraiserAccount.milestonesFired,
+      0,
+      "A new fundraiser should start with no milestones fired"
+    );
+  });
+
+  it("Fires the 25% milestone after crossing the first quarter", async () => {
+    const contributors = [
+      anchor.web3.Keypair.generate(),
+      anchor.web3.Keypair.generate(),
+      anchor.web3.Keypair.generate(),
+    ];
+
+    for (const user of contributors) {
+      const airdrop = await provider.connection.requestAirdrop(
+        user.publicKey,
+        anchor.web3.LAMPORTS_PER_SOL
+      );
+      await confirm(airdrop);
+
+      const userAta = (
+        await getOrCreateAssociatedTokenAccount(
+          provider.connection,
+          wallet.payer,
+          mint,
+          user.publicKey
+        )
+      ).address;
+
+      await mintTo(
+        provider.connection,
+        wallet.payer,
+        mint,
+        userAta,
+        provider.publicKey,
+        3_000_000
+      );
+
+      const contributorPda =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("contributor"),
+            fundraiser.toBuffer(),
+            user.publicKey.toBuffer(),
+          ],
+          program.programId
+        )[0];
+
+      await program.methods
+        .contribute(new anchor.BN(3_000_000))
+        .accountsPartial({
+          contributor: user.publicKey,
+          fundraiser,
+          contributorAccount: contributorPda,
+          contributorAta: userAta,
+          vault: getAssociatedTokenAddressSync(mint, fundraiser, true),
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([user])
+        .rpc();
+    }
+
+    const fundraiserAccount =
+      await program.account.fundraiser.fetch(fundraiser);
+
+    assert.equal(
+      fundraiserAccount.milestonesFired,
+      1,
+      "The 25% milestone should be marked as fired"
+    );
+  });
+
+  it("Does not fire the 25% milestone before the first quarter", async () => {
+    const freshMaker = anchor.web3.Keypair.generate();
+
+    const airdrop = await provider.connection.requestAirdrop(
+      freshMaker.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
+    );
+    await confirm(airdrop);
+
+    const freshFundraiser =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("fundraiser"),
+          freshMaker.publicKey.toBuffer(),
+        ],
+        program.programId
+      )[0];
+
+    const freshVault = getAssociatedTokenAddressSync(
+      mint,
+      freshFundraiser,
+      true
+    );
+
+    await program.methods
+      .initialize(new anchor.BN(30_000_000), 7)
+      .accountsPartial({
+        maker: freshMaker.publicKey,
+        fundraiser: freshFundraiser,
+        mintToRaise: mint,
+        vault: freshVault,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      })
+      .signers([freshMaker])
+      .rpc();
+
+    const contributors = [
+      anchor.web3.Keypair.generate(),
+      anchor.web3.Keypair.generate(),
+    ];
+
+    for (const user of contributors) {
+      const userAirdrop = await provider.connection.requestAirdrop(
+        user.publicKey,
+        anchor.web3.LAMPORTS_PER_SOL
+      );
+      await confirm(userAirdrop);
+
+      const userAta = (
+        await getOrCreateAssociatedTokenAccount(
+          provider.connection,
+          wallet.payer,
+          mint,
+          user.publicKey
+        )
+      ).address;
+
+      await mintTo(
+        provider.connection,
+        wallet.payer,
+        mint,
+        userAta,
+        provider.publicKey,
+        3_000_000
+      );
+
+      const contributorPda =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("contributor"),
+            freshFundraiser.toBuffer(),
+            user.publicKey.toBuffer(),
+          ],
+          program.programId
+        )[0];
+
+      await program.methods
+        .contribute(new anchor.BN(3_000_000))
+        .accountsPartial({
+          contributor: user.publicKey,
+          fundraiser: freshFundraiser,
+          contributorAccount: contributorPda,
+          contributorAta: userAta,
+          vault: freshVault,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([user])
+        .rpc();
+    }
+
+    const fundraiserAccount =
+      await program.account.fundraiser.fetch(freshFundraiser);
+
+    assert.equal(
+      fundraiserAccount.milestonesFired,
+      0,
+      "The milestone should not fire before 25%"
+    );
+  });
+
+  it("Fires both 25% and 50% milestones by the halfway point", async () => {
+    const freshMaker = anchor.web3.Keypair.generate();
+
+    const airdrop = await provider.connection.requestAirdrop(
+      freshMaker.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
+    );
+    await confirm(airdrop);
+
+    const freshFundraiser =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("fundraiser"),
+          freshMaker.publicKey.toBuffer(),
+        ],
+        program.programId
+      )[0];
+
+    const freshVault = getAssociatedTokenAddressSync(
+      mint,
+      freshFundraiser,
+      true
+    );
+
+    await program.methods
+      .initialize(new anchor.BN(30_000_000), 7)
+      .accountsPartial({
+        maker: freshMaker.publicKey,
+        fundraiser: freshFundraiser,
+        mintToRaise: mint,
+        vault: freshVault,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      })
+      .signers([freshMaker])
+      .rpc();
+
+    const contributors = Array.from(
+      { length: 5 },
+      () => anchor.web3.Keypair.generate()
+    );
+
+    for (const user of contributors) {
+      const userAirdrop = await provider.connection.requestAirdrop(
+        user.publicKey,
+        anchor.web3.LAMPORTS_PER_SOL
+      );
+      await confirm(userAirdrop);
+
+      const userAta = (
+        await getOrCreateAssociatedTokenAccount(
+          provider.connection,
+          wallet.payer,
+          mint,
+          user.publicKey
+        )
+      ).address;
+
+      await mintTo(
+        provider.connection,
+        wallet.payer,
+        mint,
+        userAta,
+        provider.publicKey,
+        3_000_000
+      );
+
+      const contributorPda =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("contributor"),
+            freshFundraiser.toBuffer(),
+            user.publicKey.toBuffer(),
+          ],
+          program.programId
+        )[0];
+
+      await program.methods
+        .contribute(new anchor.BN(3_000_000))
+        .accountsPartial({
+          contributor: user.publicKey,
+          fundraiser: freshFundraiser,
+          contributorAccount: contributorPda,
+          contributorAta: userAta,
+          vault: freshVault,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([user])
+        .rpc();
+    }
+
+    const fundraiserAccount =
+      await program.account.fundraiser.fetch(freshFundraiser);
+
+    assert.equal(
+      fundraiserAccount.milestonesFired,
+      3,
+      "The 25% and 50% milestones should both be fired"
+    );
   });
 
   it("Contribute to Fundraiser", async () => {
