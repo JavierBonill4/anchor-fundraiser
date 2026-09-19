@@ -61,6 +61,7 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub milestones_fired: u8,
 }
 ```
 
@@ -79,6 +80,8 @@ pub struct Fundraiser {
 - duration: the timeframe to collect all the contributions (in days) 
 
 - bump: since our Fundraiser account will be a PDA (Program Derived Address), we will store the bump of the account
+
+- milestones_fired: a bitmask recording whether the 25%, 50%, and 75% milestones have fired; bits 0, 1, and 2 represent those marks respectively
 
 We use InitSpace derive macro to implement the space triat that will calculate the amount of space that our account will use on-chain (without taking the anchor discriminator into consideration)
 
@@ -148,7 +151,8 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            milestones_fired: 0,
         });
         
         Ok(())
