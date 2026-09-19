@@ -8,6 +8,7 @@ use anchor_spl::token::{
 };
 
 use crate::{
+    events::MilestoneReached,
     state::{
         Contributor, 
         Fundraiser
@@ -102,9 +103,64 @@ impl<'info> Contribute<'info> {
         transfer(cpi_ctx, amount)?;
 
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
+        self.fire_milestones()?;
+
+        Ok(())
+    }
+
+    /// Emits a `MilestoneReached` for every quarter the vault now satisfies and
+    /// has not already announced.
+    ///
+    /// Read what this computes: where the vault *is*, not what just changed. A
+    /// contribution can jump past a mark without landing on it, so "did this
+    /// contribution hit a boundary" is the wrong question.
+    fn fire_milestones(&mut self) -> Result<()> {
+        let fundraiser_key = self.fundraiser.key();
+        let current_amount = self.fundraiser.current_amount;
+        let amount_to_raise = self.fundraiser.amount_to_raise;
+
+        // `initialize` rejects a target of zero, so this division is safe.
+        // Multiply before dividing: `current / target * 4` is zero until the very end.
+        let quarters = current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            / amount_to_raise;
+
+        // Only 25%, 50% and 75% have flags. A fully funded vault is `check_contributions`'
+        // business, not a milestone.
+        let reached = quarters.min(3) as u8;
+        let timestamp = Clock::get()?.unix_timestamp;
+
+        for quarter in 1..=reached {
+            let flag = 1u8 << (quarter - 1);
+
+            // The condition that tripped this stays true afterwards, so the flag is
+            // what stops it firing on every later contribution.
+            if self.fundraiser.milestones_fired & flag != 0 {
+                continue;
+            }
+            self.fundraiser.milestones_fired |= flag;
+
+            emit!(MilestoneReached {
+                fundraiser: fundraiser_key,
+                quarter,
+                current_amount,
+                amount_to_raise,
+                timestamp,
+            });
+        }
 
         Ok(())
     }
