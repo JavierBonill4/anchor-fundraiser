@@ -302,9 +302,22 @@ describe("fundraiser — milestones", () => {
     await send([await c.acknowledge(0, c.maker.publicKey)], [c.maker]);
     assert.strictEqual((await c.state()).milestonesAnnounced, 0b001);
 
-    // ...and the flag is what stops the second time.
+    // ...and the flag is what stops the second time. The retry has to carry a
+    // throwaway instruction, otherwise it is byte for byte the transaction that
+    // just succeeded and the ledger drops it as a duplicate before the program
+    // ever runs — which would prove nothing about the flag.
     try {
-      await send([await c.acknowledge(0, c.maker.publicKey)], [c.maker]);
+      await send(
+        [
+          anchor.web3.SystemProgram.transfer({
+            fromPubkey: payer.publicKey,
+            toPubkey: payer.publicKey,
+            lamports: 1,
+          }),
+          await c.acknowledge(0, c.maker.publicKey),
+        ],
+        [c.maker]
+      );
       assert.fail("a milestone must not be announced twice");
     } catch (err) {
       assertErrorIs(err, "MilestoneAlreadyAnnounced", "the flag byte already has bit 0 set");
