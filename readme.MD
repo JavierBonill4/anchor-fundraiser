@@ -24,6 +24,26 @@ This example demonstrates how to create a fundraising for SPL Tokens.
 
 In this example, a user will be able to create a fundraiser account, where he will be specify the mint he wants to collect and the fundraising target.
 
+## Chosen feature: Option A — fundraising milestones
+
+_This design was written before implementation; the implementation now follows it._
+
+### What it does
+
+I chose Option A. The fundraiser records when its contributions first reach 25%, 50%, and 75% of the target and emits a `MilestoneReached` event for each newly reached mark. This gives clients an on-chain, one-time signal for campaign progress without requiring them to infer whether a threshold was crossed from a series of token balances. Milestones are historical: once reached, they remain reached even if a failed campaign later returns contributions.
+
+### How it works
+
+The `Fundraiser` account has a `milestones_fired: u8` bitmask, with bits 0, 1, and 2 representing 25%, 50%, and 75%. It is appended to the account layout and starts at zero. The feature runs inline at the end of `contribute`, after the existing contributor ATA transfers tokens into the existing fundraiser vault and `current_amount` is updated with checked arithmetic. It computes `current_amount * 4 / amount_to_raise`, checks every satisfied quarter, sets each previously clear bit, and emits `MilestoneReached` in the same transaction. It uses the existing `Fundraiser`, `Contributor`, contributor ATA, and vault accounts; no new account is passed to `contribute`. The loop handles a contribution that crosses several marks, while the bitmask prevents duplicate events. `refund` does not clear bits because milestones describe campaign history.
+
+### What it costs
+
+The feature adds no accounts and no CPI. It adds one byte to every new `Fundraiser`, increasing its serialized size from 98 to 99 bytes including the Anchor discriminator. With Solana's usual rent parameters, that is about 6,960 additional lamports of rent-exempt funding; the cluster rent sysvar determines the exact amount. Each contribution adds one checked multiplication and division plus at most three bit checks, and each newly reached mark adds one event log. In local-validator measurements, complete contribution transactions consumed roughly 20,600–29,600 CU; that total includes the existing token transfer and creation of a new contributor PDA, whose PDA bump makes the result vary. The milestone work is constant and does not grow with the number of contributors.
+
+### How I would attack it
+
+I would try to make a milestone fire twice by submitting repeated contributions around an exact boundary, and I would try one contribution that jumps across several boundaries to expose `if`/`else if` logic that records only one mark. I would use values near `u64::MAX` to look for overflow in `current_amount` or percentage calculations, so all additions and multiplications must be checked and the whole transaction must fail safely. I would also transfer tokens directly to the vault, bypassing `contribute`; this can make the vault balance higher than `current_amount`, so clients must treat the milestone state as progress recorded through the program rather than proof of the vault's live balance. Finally, I would test a failed campaign that crossed a milestone and then processed refunds: the bits intentionally remain set, so a client that displays them as the current percentage could mislead users. Event logs also need an indexer because logs alone are not durable application state.
+
 ---
 
 ## Let's walk through the architecture:
@@ -41,6 +61,7 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub milestones_fired: u8,
 }
 ```
 
@@ -59,6 +80,8 @@ pub struct Fundraiser {
 - duration: the timeframe to collect all the contributions (in days) 
 
 - bump: since our Fundraiser account will be a PDA (Program Derived Address), we will store the bump of the account
+
+- milestones_fired: a bitmask recording whether the 25%, 50%, and 75% milestones have fired; bits 0, 1, and 2 represent those marks respectively
 
 We use InitSpace derive macro to implement the space triat that will calculate the amount of space that our account will use on-chain (without taking the anchor discriminator into consideration)
 
@@ -128,7 +151,8 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            milestones_fired: 0,
         });
         
         Ok(())
