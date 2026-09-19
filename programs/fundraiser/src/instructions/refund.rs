@@ -1,18 +1,19 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{
-    transfer, 
+    burn,
+    transfer,
+    Burn, 
     Mint, 
     Token, 
     TokenAccount, 
-    Transfer
+    Transfer,
 };
 
 use crate::{
-    state::{
+    SECONDS_TO_DAYS, error::FundraiserError, state::{
         Contributor, 
         Fundraiser
-    }, 
-    SECONDS_TO_DAYS
+    }
 };
 
 #[derive(Accounts)]
@@ -21,9 +22,12 @@ pub struct Refund<'info> {
     pub contributor: Signer<'info>,
     pub maker: SystemAccount<'info>,
     pub mint_to_raise: Account<'info, Mint>,
+    #[account(mut)]
+    pub reward_mint: Account<'info, Mint>,
     #[account(
         mut,
         has_one = mint_to_raise,
+        has_one = reward_mint @ FundraiserError::InvalidRewardMint,
         seeds = [b"fundraiser", maker.key().as_ref()],
         bump = fundraiser.bump,
     )]
@@ -41,6 +45,12 @@ pub struct Refund<'info> {
         associated_token::authority = contributor
     )]
     pub contributor_ata: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        associated_token::mint = reward_mint,
+        associated_token::authority = contributor
+    )]
+    pub contributor_reward_ata: Account<'info, TokenAccount>,
     #[account(
         mut,
         associated_token::mint = mint_to_raise,
@@ -68,34 +78,68 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::TargetMet
         );
 
-        // Transfer the funds back to the contributor
-        // CPI to the token program to transfer the funds
-        // As of Anchor 1.0 a CpiContext takes the program's address, not its AccountInfo.
-        let cpi_program = self.token_program.key();
+                let owed_back = self.contributor_account.amount;
+        let rewards = self.contributor_account.rewards_minted;
 
-        // Transfer the funds from the vault to the contributor
-        let cpi_accounts = Transfer {
-            from: self.vault.to_account_info(),
-            to: self.contributor_ata.to_account_info(),
-            authority: self.fundraiser.to_account_info(),
-        };
+        // burn what this wallet was paid (contributor signs); named error, not InsufficientFunds
+        require!(self.contributor_reward_ata.amount >= rewards, FundraiserError::RewardsNotHeld);
+        burn(
+            CpiContext::new(self.token_program.key(), Burn {
+                mint: self.reward_mint.to_account_info(),
+                from: self.contributor_reward_ata.to_account_info(),
+                authority: self.contributor.to_account_info(),
+            }),
+            rewards,
+        )?;
 
-        // Signer seeds to sign the CPI on behalf of the fundraiser account
+        // original refund, PDA signs
         let signer_seeds: [&[&[u8]]; 1] = [&[
             b"fundraiser".as_ref(),
             self.maker.to_account_info().key.as_ref(),
             &[self.fundraiser.bump],
         ]];
+        transfer(
+            CpiContext::new_with_signer(self.token_program.key(), Transfer {
+                from: self.vault.to_account_info(),
+                to: self.contributor_ata.to_account_info(),
+                authority: self.fundraiser.to_account_info(),
+            }, &signer_seeds),
+            owed_back,
+        )?;
 
-        // CPI context with signer since the fundraiser account is a PDA
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
-
-        // Transfer the funds from the vault to the contributor
-        transfer(cpi_ctx, self.contributor_account.amount)?;
-
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
-
+        self.fundraiser.current_amount = self.fundraiser.current_amount
+            .checked_sub(owed_back).ok_or(FundraiserError::Overflow)?;
+        
         Ok(())
+
+        // // Transfer the funds back to the contributor
+        // // CPI to the token program to transfer the funds
+        // // As of Anchor 1.0 a CpiContext takes the program's address, not its AccountInfo.
+        // let cpi_program = self.token_program.key();
+
+        // // Transfer the funds from the vault to the contributor
+        // let cpi_accounts = Transfer {
+        //     from: self.vault.to_account_info(),
+        //     to: self.contributor_ata.to_account_info(),
+        //     authority: self.fundraiser.to_account_info(),
+        // };
+
+        // // Signer seeds to sign the CPI on behalf of the fundraiser account
+        // let signer_seeds: [&[&[u8]]; 1] = [&[
+        //     b"fundraiser".as_ref(),
+        //     self.maker.to_account_info().key.as_ref(),
+        //     &[self.fundraiser.bump],
+        // ]];
+
+        // // CPI context with signer since the fundraiser account is a PDA
+        // let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
+
+        // // Transfer the funds from the vault to the contributor
+        // transfer(cpi_ctx, self.contributor_account.amount)?;
+
+        // // Update the fundraiser state by reducing the amount contributed
+        // self.fundraiser.current_amount -= self.contributor_account.amount;
+
+        // Ok(())
     }
 }

@@ -9,7 +9,7 @@ use anchor_spl::{
 };
 
 use crate::{
-    state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE
+    state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE, REWARD_DECIMALS
 };
 
 #[derive(Accounts)]
@@ -32,6 +32,16 @@ pub struct Initialize<'info> {
         associated_token::authority = fundraiser,
     )]
     pub vault: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = maker,
+        seeds = [b"reward", fundraiser.key().as_ref()],
+        bump,
+        mint::decimals = REWARD_DECIMALS,
+        mint::authority = fundraiser,
+        mint::token_program = token_program,
+    )]
+    pub reward_mint: Account<'info, Mint>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -62,7 +72,8 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            reward_mint: self.reward_mint.key(),
         });
         
         Ok(())
