@@ -26,7 +26,7 @@ In this example, a user will be able to create a fundraiser account, where he wi
 
 ## Chosen feature: Option A — fundraising milestones
 
-_This design was written before the feature was implemented._
+_This design was written before implementation; the implementation now follows it._
 
 ### What it does
 
@@ -34,11 +34,11 @@ I chose Option A. The fundraiser records when its contributions first reach 25%,
 
 ### How it works
 
-The `Fundraiser` account gains a `milestones_fired: u8` bitmask, with bits 0, 1, and 2 representing 25%, 50%, and 75%. The field is appended to the account layout so existing fields keep their offsets. The feature hooks into `contribute` after the SPL token transfer succeeds and `current_amount` is updated with checked arithmetic. It evaluates every threshold satisfied by the new total, emits an event for each bit that was previously clear, and sets those bits in the same transaction. Checking all three thresholds handles a contribution that crosses more than one mark, while the bitmask prevents later contributions from emitting a milestone twice. `refund` does not clear milestone bits because they describe campaign history rather than the current vault balance.
+The `Fundraiser` account has a `milestones_fired: u8` bitmask, with bits 0, 1, and 2 representing 25%, 50%, and 75%. It is appended to the account layout and starts at zero. The feature runs inline at the end of `contribute`, after the existing contributor ATA transfers tokens into the existing fundraiser vault and `current_amount` is updated with checked arithmetic. It computes `current_amount * 4 / amount_to_raise`, checks every satisfied quarter, sets each previously clear bit, and emits `MilestoneReached` in the same transaction. It uses the existing `Fundraiser`, `Contributor`, contributor ATA, and vault accounts; no new account is passed to `contribute`. The loop handles a contribution that crosses several marks, while the bitmask prevents duplicate events. `refund` does not clear bits because milestones describe campaign history.
 
 ### What it costs
 
-The design adds no new accounts and no CPI. It adds one byte to every new `Fundraiser` account, increasing its serialized size from 98 to 99 bytes including the Anchor discriminator. With Solana's usual rent parameters, that is about 6,960 additional lamports of rent-exempt funding; the cluster's rent sysvar determines the exact amount. Each contribution also pays for a fixed set of three checked threshold comparisons and bit operations, plus log compute and transaction log space for each newly emitted event. The exact CU increase must be measured after implementation, but it is bounded and does not grow with the number of contributors.
+The feature adds no accounts and no CPI. It adds one byte to every new `Fundraiser`, increasing its serialized size from 98 to 99 bytes including the Anchor discriminator. With Solana's usual rent parameters, that is about 6,960 additional lamports of rent-exempt funding; the cluster rent sysvar determines the exact amount. Each contribution adds one checked multiplication and division plus at most three bit checks, and each newly reached mark adds one event log. In local-validator measurements, complete contribution transactions consumed roughly 20,600–29,600 CU; that total includes the existing token transfer and creation of a new contributor PDA, whose PDA bump makes the result vary. The milestone work is constant and does not grow with the number of contributors.
 
 ### How I would attack it
 
