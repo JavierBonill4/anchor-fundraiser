@@ -121,4 +121,47 @@ describe("nft receipt", () => {
     const ata = await getAccount(provider.connection, receiptAta());
     assert.equal(ata.amount.toString(), "1");
   });
+
+  it("mints a separate receipt NFT for a different contributor", async () => {
+    const other = anchor.web3.Keypair.generate();
+    const sig = await provider.connection.requestAirdrop(other.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
+    const block = await provider.connection.getLatestBlockhash();
+    await provider.connection.confirmTransaction({ signature: sig, ...block });
+
+    const otherAta = (await getOrCreateAssociatedTokenAccount(provider.connection, wallet.payer, mint, other.publicKey)).address;
+    await mintTo(provider.connection, wallet.payer, mint, otherAta, provider.publicKey, 10_000_000);
+
+    const otherContributor = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("contributor"), fundraiser.toBuffer(), other.publicKey.toBuffer()],
+      program.programId
+    )[0];
+    const otherReceipt = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), other.publicKey.toBuffer()],
+      program.programId
+    )[0];
+    const otherReceiptAta = getAssociatedTokenAddressSync(otherReceipt, other.publicKey);
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    await program.methods
+      .contribute(new anchor.BN(1_000_000))
+      .accountsPartial({
+        contributor: other.publicKey,
+        fundraiser,
+        contributorAccount: otherContributor,
+        contributorAta: otherAta,
+        vault,
+        receiptMint: otherReceipt,
+        receiptAta: otherReceiptAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      })
+      .signers([other])
+      .rpc({ skipPreflight: true })
+      .then(confirm);
+
+    const minted = await getMint(provider.connection, otherReceipt);
+    assert.equal(minted.decimals, 0);
+    assert.equal(minted.supply.toString(), "1");
+    assert.notEqual(otherReceipt.toBase58(), receiptMint.toBase58());
+  });
 });
