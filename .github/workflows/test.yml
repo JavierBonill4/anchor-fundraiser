@@ -1,0 +1,123 @@
+name: anchor test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.13/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor 1.1.2
+        run: |
+          cargo install --git https://github.com/solana-foundation/anchor --tag v1.1.2 avm --locked
+          avm install 1.1.2
+          avm use 1.1.2
+          anchor --version
+
+      - name: Wallet
+        run: solana-keygen new --no-bip39-passphrase --silent --outfile ~/.config/solana/id.json
+
+      - run: yarn install --frozen-lockfile
+
+      # The repo does not ship the program keypair, so sync the id to the one
+      # this build generates (see readme).
+      - name: Build
+        run: |
+          anchor build
+          anchor keys sync
+          anchor build
+
+      # Anchor 1.x spawns surfpool by default; run the Agave validator
+      # ourselves with the freshly built program preloaded instead.
+      - name: Start validator
+        run: |
+          PROGRAM_ID=$(solana address -k target/deploy/fundraiser-keypair.json)
+          solana-test-validator --reset --quiet             --bpf-program "$PROGRAM_ID" target/deploy/fundraiser.so &
+          for i in $(seq 1 60); do
+            solana cluster-version -u localhost >/dev/null 2>&1 && break
+            sleep 2
+          done
+          solana cluster-version -u localhost
+
+      - name: Test (validator + bankrun, including milestones)
+        run: anchor test --skip-build --skip-deploy --skip-local-validator
+
+  # Proof for "at least one test must fail without your feature": build the
+  # untouched base program from main, run only the milestone tests against it,
+  # and require that they fail.
+  without-feature:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.13/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor 1.1.2
+        run: |
+          cargo install --git https://github.com/solana-foundation/anchor --tag v1.1.2 avm --locked
+          avm install 1.1.2
+          avm use 1.1.2
+
+      - run: yarn install --frozen-lockfile
+
+      - name: Swap in the base program (no milestones)
+        run: |
+          git remote add upstream https://github.com/JavierBonill4/anchor-fundraiser
+          git fetch upstream main
+          rm -rf programs
+          git checkout upstream/main -- programs
+          ! grep -r milestones programs && echo "base program has no milestone code"
+
+      - name: Build base program
+        run: |
+          anchor build
+          anchor keys sync
+          anchor build
+
+      - name: Milestone tests must fail against the base program
+        env:
+          TS_NODE_TRANSPILE_ONLY: "true"
+        run: |
+          set +e
+          yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/milestones-bankrun.ts 2>&1 | tee without.log
+          status=${PIPESTATUS[0]}
+          grep -E "passing|failing" without.log
+          if [ "$status" -eq 0 ]; then
+            echo "::error::milestone tests passed without the feature"
+            exit 1
+          fi
+          echo "OK: milestone tests fail without the feature (exit $status)"

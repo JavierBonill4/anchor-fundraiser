@@ -106,6 +106,11 @@ impl<'info> Contribute<'info> {
 
         self.contributor_account.amount += amount;
 
+        // The feature hook: record every mark this contribution crossed. It runs
+        // last, on the totals the base instruction just wrote, so it can never
+        // change whether a contribution is accepted.
+        crate::instructions::milestones::record_milestones(&mut self.fundraiser)?;
+
         Ok(())
     }
 }
