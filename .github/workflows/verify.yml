@@ -31,7 +31,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     # Grade forks, not the starter.
     #
@@ -44,7 +44,6 @@ jobs:
 
     env:
       CHALLENGE_ID: fundraiser-feature
-      PROGRAM_SO: target/deploy/fundraiser.so
 
     steps:
       - uses: actions/checkout@v4
@@ -64,16 +63,72 @@ jobs:
           sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
-      # `anchor test` starts a validator and deploys to it, which needs a
-      # keypair. Runners have none.
+      # Deploying to a local validator needs a keypair. Runners have none.
       - name: Create a throwaway keypair
         run: solana-keygen new --no-bip39-passphrase -s -o "$HOME/.config/solana/id.json"
 
-      - name: Install Anchor
+      # avm is deliberately NOT used.
+      #
+      # Two reasons. It compiles itself from source, which costs minutes to
+      # install a version manager whose only job here is to fetch one binary.
+      # And current avm verifies the downloaded binary's build provenance
+      # through the GitHub attestations API, which answers 403 to a job
+      # holding only `contents: read` — so `avm install` fails outright on a
+      # hardened workflow. Take the release binary directly and check its
+      # hash ourselves.
+      #
+      # On any failure the fallback is `cargo install anchor-cli`, which is
+      # slow but has no provenance step and no avm.
+      - name: Install Anchor 1.1.2
+        env:
+          ANCHOR_URL: https://github.com/solana-foundation/anchor/releases/download/v1.1.2/anchor-1.1.2-x86_64-unknown-linux-gnu
+          ANCHOR_SHA256: fdea9979629e9416e5f5e5622ff6c11b8c691d1e559581ece368e903c0c980c1
         run: |
-          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
-          avm install 1.1.2
-          avm use 1.1.2
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ok=0
+          if curl -sSfL --retry 3 -o /tmp/anchor "$ANCHOR_URL"; then
+            if echo "$ANCHOR_SHA256  /tmp/anchor" | sha256sum -c -; then
+              install -m 0755 /tmp/anchor "$HOME/.local/bin/anchor"
+              ok=1
+            else
+              echo "::warning::Anchor binary checksum did not match; building from source."
+            fi
+          else
+            echo "::warning::Could not download the Anchor binary; building from source."
+          fi
+          if [ "$ok" = "0" ]; then
+            cargo install anchor-cli --version 1.1.2 --locked --force
+          fi
+          anchor --version
+
+      # Anchor 1.0 made surfpool — not solana-test-validator — the backend for
+      # `anchor test`, and it is a separate install. Without it the test step
+      # fails before a single test runs. Pinned so grading is reproducible; if
+      # the pinned build is ever unreachable, grade.py falls back to the legacy
+      # validator rather than failing the run.
+      - name: Install surfpool
+        env:
+          SURFPOOL_URL: https://github.com/solana-foundation/surfpool/releases/download/v1.6.0/surfpool-linux-x64.tar.gz
+          SURFPOOL_SHA256: cb471b00aa3b7d603338eb74ebfec1d23959ecba005b5f1be42ba8d174107fc2
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          if curl -sSfL --retry 3 -o /tmp/surfpool.tar.gz "$SURFPOOL_URL" \
+            && echo "$SURFPOOL_SHA256  /tmp/surfpool.tar.gz" | sha256sum -c -; then
+            tar xzf /tmp/surfpool.tar.gz -C "$HOME/.local/bin"
+            chmod +x "$HOME/.local/bin/surfpool"
+            "$HOME/.local/bin/surfpool" --version || true
+          else
+            echo "::warning::surfpool unavailable; grade.py will use --validator legacy."
+          fi
+
+      # cargo-build-sbf downloads the Solana platform-tools toolchain on its
+      # first run — a few hundred megabytes that are identical every time.
+      - name: Cache Solana platform-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/solana
+          key: solana-platform-tools-${{ runner.os }}
 
       - name: Install JS dependencies
         run: yarn install --frozen-lockfile || yarn install
