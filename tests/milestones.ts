@@ -10,7 +10,7 @@ import {
   mintTo,
 } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
-import { assert } from "chai";
+import { assert, AssertionError } from "chai";
 
 describe("fundraiser — milestones", () => {
   const provider = anchor.AnchorProvider.env();
@@ -44,7 +44,9 @@ describe("fundraiser — milestones", () => {
     await provider.connection.confirmTransaction(signature, "confirmed");
   };
 
-  const openCampaign = async (): Promise<Campaign> => {
+  const openCampaign = async (
+    target: anchor.BN = new anchor.BN(TARGET),
+  ): Promise<Campaign> => {
     const maker = anchor.web3.Keypair.generate();
     await fund(maker.publicKey);
 
@@ -63,7 +65,7 @@ describe("fundraiser — milestones", () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await program.methods
-      .initialize(new anchor.BN(TARGET), 7)
+      .initialize(target, 7)
       .accountsPartial({
         maker: maker.publicKey,
         mintToRaise: mint,
@@ -77,6 +79,15 @@ describe("fundraiser — milestones", () => {
       .rpc();
 
     return { maker, mint, fundraiser, vault };
+  };
+
+  const errorCodeOf = (err: any): string => {
+    if (err instanceof AssertionError) throw err;
+    if (err?.error?.errorCode?.code) return err.error.errorCode.code;
+
+    const text = `${err?.message ?? ""} ${JSON.stringify(err?.logs ?? [])}`;
+    const match = text.match(/Error Code: (\w+)/);
+    return match ? match[1] : text.slice(0, 300);
   };
 
   const eventsFrom = async (signature: string): Promise<MilestoneEvent[]> => {
@@ -236,5 +247,36 @@ describe("fundraiser — milestones", () => {
     );
     assert.strictEqual(fundraiser.milestonesFired, 0b001);
     assert.strictEqual(fundraiser.currentAmount.toString(), "14");
+  });
+
+  it("returns the named Overflow error for a maliciously large target", async () => {
+    const campaign = await openCampaign(
+      new anchor.BN("18446744073709551615"), // u64::MAX
+    );
+
+    try {
+      await contribute(campaign, 1);
+      assert.fail("a target whose percentage calculation overflows must fail");
+    } catch (err) {
+      assert.strictEqual(
+        errorCodeOf(err).toLowerCase(),
+        "overflow",
+        "the program should return its named Overflow error",
+      );
+    }
+
+    const fundraiser = await program.account.fundraiser.fetch(
+      campaign.fundraiser,
+    );
+    const vault = await provider.connection.getTokenAccountBalance(
+      campaign.vault,
+    );
+    assert.strictEqual(fundraiser.currentAmount.toString(), "0");
+    assert.strictEqual(fundraiser.milestonesFired, 0);
+    assert.strictEqual(
+      vault.value.amount,
+      "0",
+      "the failed call must move no tokens",
+    );
   });
 });
