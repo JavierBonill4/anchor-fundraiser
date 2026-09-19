@@ -1,10 +1,15 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{
+        mint_to,
+        transfer,
+        Mint,
+        MintTo,
+        Token,
+        TokenAccount,
+        Transfer
+    },
 };
 
 use crate::{
@@ -25,6 +30,7 @@ pub struct Contribute<'info> {
     #[account(
         mut,
         has_one = mint_to_raise,
+        has_one = reward_mint @ FundraiserError::InvalidRewardMint,
         seeds = [b"fundraiser".as_ref(), fundraiser.maker.as_ref()],
         bump = fundraiser.bump,
     )]
@@ -49,7 +55,21 @@ pub struct Contribute<'info> {
         associated_token::authority = fundraiser
     )]
     pub vault: Account<'info, TokenAccount>,
+    /// Checked against `fundraiser.reward_mint` by the `has_one` above, so a
+    /// caller cannot redirect the mint by passing a different one in.
+    #[account(mut)]
+    pub reward_mint: Account<'info, Mint>,
+    /// The contributor's own reward-token receipt account; created on their
+    /// first contribution, reused after that.
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        associated_token::mint = reward_mint,
+        associated_token::authority = contributor,
+    )]
+    pub contributor_reward_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
@@ -105,6 +125,27 @@ impl<'info> Contribute<'info> {
         self.fundraiser.current_amount += amount;
 
         self.contributor_account.amount += amount;
+
+        // Mint the reward, 1:1 with the raw amount just contributed, signed
+        // by the fundraiser PDA (the reward mint's authority). This happens
+        // whether or not the campaign ever hits its target, and survives a
+        // later refund — it is a receipt of having contributed, not a claim
+        // on the campaign succeeding.
+        let cpi_accounts = MintTo {
+            mint: self.reward_mint.to_account_info(),
+            to: self.contributor_reward_ata.to_account_info(),
+            authority: self.fundraiser.to_account_info(),
+        };
+
+        let signer_seeds: [&[&[u8]]; 1] = [&[
+            b"fundraiser".as_ref(),
+            self.fundraiser.maker.as_ref(),
+            &[self.fundraiser.bump],
+        ]];
+
+        let cpi_ctx = CpiContext::new_with_signer(self.token_program.key(), cpi_accounts, &signer_seeds);
+
+        mint_to(cpi_ctx, amount)?;
 
         Ok(())
     }
