@@ -102,9 +102,34 @@ impl<'info> Contribute<'info> {
         transfer(cpi_ctx, amount)?;
 
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
+
+        let current_quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::ArithmeticOverflow)?
+            / self.fundraiser.amount_to_raise;
+
+        for i in 0..3 {
+            let flag = 1u8 << i;
+
+            if current_quarters >= (i + 1) as u64
+                && self.fundraiser.milestones_fired & flag == 0
+            {
+                self.fundraiser.milestones_fired |= flag;
+            }
+        }
 
         Ok(())
     }
