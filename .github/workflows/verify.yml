@@ -71,9 +71,7 @@ jobs:
 
       - name: Install Anchor
         run: |
-          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
-          avm install 1.1.2
-          avm use 1.1.2
+          cargo install --git https://github.com/coral-xyz/anchor --tag v1.1.2 anchor-cli --locked --force
 
       - name: Install JS dependencies
         run: yarn install --frozen-lockfile || yarn install
