@@ -490,3 +490,55 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: Milestone Tracking & Events (Option A)
+
+### What It Does
+When contributions to a campaign cross 25%, 50%, or 75% of the fundraising target, the program records the milestone on-chain and emits a `MilestoneReached` event.
+
+Instead of off-chain frontends repeatedly polling RPC nodes for vault token balances or computing fractions client-side, dApps and notification bots can subscribe directly to on-chain WebSocket events or query the fundraiser's milestone state to celebrate progress and update UI progress bars.
+
+### How It Works
+1. **State Addition (`programs/fundraiser/src/state/fundraiser.rs`)**:
+   - Appended `pub milestones_fired: u8` to the `Fundraiser` account struct.
+   - Bitmask representation:
+     - Bit 0 (`0b0001` / `1`): 25% milestone reached.
+     - Bit 1 (`0b0010` / `2`): 50% milestone reached.
+     - Bit 2 (`0b0100` / `4`): 75% milestone reached.
+   - Initialized to `0` during campaign `initialize`.
+
+2. **Trigger & Checked Math (`programs/fundraiser/src/instructions/contribute.rs`)**:
+   - Fires inline at the end of `contribute`, immediately after funds land in the vault and `current_amount` is updated using `checked_add`.
+   - Uses integer arithmetic (multiply-before-divide to retain precision) with overflow protection:
+     ```rust
+     let quarters = self.fundraiser.current_amount
+         .checked_mul(4)
+         .ok_or(FundraiserError::Overflow)?
+         / self.fundraiser.amount_to_raise;
+     ```
+   - Iterates through quarters up to 75% (`0..quarters.min(3)`). For each milestone not yet recorded in `milestones_fired`, it sets the corresponding bit and emits:
+     ```rust
+     emit!(MilestoneReached {
+         fundraiser: self.fundraiser.key(),
+         milestone_percentage,
+         current_amount: self.fundraiser.current_amount,
+         target_amount: self.fundraiser.amount_to_raise,
+     });
+     ```
+   - If a large contribution leaps across multiple boundaries (e.g. from 20% to 55%), both the 25% and 50% milestones fire sequentially.
+   - Idempotent: once a bit is set in `milestones_fired`, repeat contributions never re-emit that milestone.
+
+### What It Costs
+- **Rent**: Exactly 1 extra byte on the `Fundraiser` account (`milestones_fired: u8`). With Solana rent exemption calculation, this costs a negligible fraction of a cent (~0.00000696 SOL) paid once by the maker, which is 100% refunded when `check_contributions` closes the account.
+- **Accounts**: Zero extra accounts required.
+- **Compute**: Under ~1,000 Compute Units. The integer multiplication, division, and bitwise loop execute in fewer than 50 SBF instructions.
+
+### How You Would Attack It / Known Weaknesses
+1. **One-Way Semantics vs. Refunds**:
+   - When a campaign fails and contributors call `refund`, `current_amount` decreases. However, `milestones_fired` is intentionally **not** rolled back.
+   - *Impact*: An attacker could coordinate with accomplices to deposit enough tokens to trigger the 75% milestone event, wait for the deadline to pass without reaching 100%, and refund all tokens. The on-chain state would still read `milestones_fired = 7` even though the vault is empty.
+   - *Defense / Rationale*: Milestones record historical accomplishments during the active fundraising window. Flickering milestone status (firing, un-firing, and re-firing) would create severe front-end UI confusion and open event-spam vectors. Front-ends tracking actual fund custody must always verify the live vault balance rather than relying solely on past milestone flags.
+2. **Precision on Tiny Targets**:
+   - Because integer division truncates, `current_amount * 4 / target` rounds down. A contribution that leaves the vault at 24.99% of target will not trigger the 25% milestone until the full 25% threshold is mathematically met. This is safe and conservative by design.

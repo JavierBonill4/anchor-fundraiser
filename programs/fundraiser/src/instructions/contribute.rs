@@ -12,6 +12,7 @@ use crate::{
         Contributor, 
         Fundraiser
     }, FundraiserError, 
+    MilestoneReached,
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
@@ -101,10 +102,46 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Update the fundraiser and contributor accounts with the new amounts (checked arithmetic)
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
+        // Milestone calculations at quarter marks (25%, 50%, 75%)
+        // Integer arithmetic: multiply before divide to preserve precision.
+        let quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            / self.fundraiser.amount_to_raise;
+
+        for i in 0..quarters.min(3) {
+            let flag = 1u8 << i;
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+                let milestone_percentage = match i {
+                    0 => 25,
+                    1 => 50,
+                    2 => 75,
+                    _ => 0,
+                };
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    milestone_percentage,
+                    current_amount: self.fundraiser.current_amount,
+                    target_amount: self.fundraiser.amount_to_raise,
+                });
+            }
+        }
 
         Ok(())
     }
