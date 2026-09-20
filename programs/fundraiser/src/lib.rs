@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW");
+declare_id!("3pt8cQrP2JY57Bbg2Kyk93mEM5BpkTbsBFpZSXBCEWSt");
 
 mod state;
 mod instructions;
@@ -39,6 +39,20 @@ pub mod fundraiser {
     pub fn refund(ctx: Context<Refund>) -> Result<()> {
 
         ctx.accounts.refund()?;
+
+        Ok(())
+    }
+
+    pub fn draw_winner(ctx: Context<DrawWinner>) -> Result<()> {
+
+        ctx.accounts.draw_winner()?;
+
+        Ok(())
+    }
+
+    pub fn claim_prize(ctx: Context<ClaimPrize>) -> Result<()> {
+
+        ctx.accounts.claim_prize()?;
 
         Ok(())
     }
