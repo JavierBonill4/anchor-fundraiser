@@ -1,16 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
-    associated_token::AssociatedToken, 
-    token::{
-        Mint, 
-        Token, 
-        TokenAccount
-    }
+    associated_token::AssociatedToken,
+    token::{Mint, Token, TokenAccount},
 };
 
-use crate::{
-    state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE
-};
+use crate::{state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE, REWARD_DECIMALS_OFFSET, REWARD_MINT_SEED};
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -32,6 +26,15 @@ pub struct Initialize<'info> {
         associated_token::authority = fundraiser,
     )]
     pub vault: Account<'info, TokenAccount>,
+     #[account(
+        init,
+        payer = maker,
+        seeds = [REWARD_MINT_SEED, fundraiser.key().as_ref()],
+        bump,
+        mint::decimals = mint_to_raise.decimals.saturating_add(REWARD_DECIMALS_OFFSET),
+        mint::authority = fundraiser, 
+    )]
+    pub reward_mint: Account<'info, Mint>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -39,12 +42,13 @@ pub struct Initialize<'info> {
 
 impl<'info> Initialize<'info> {
     pub fn initialize(&mut self, amount: u64, duration: u8, bumps: &InitializeBumps) -> Result<()> {
-
         // Check if the amount to raise meets the minimum amount required.
         //
         // MIN_AMOUNT_TO_RAISE is a count of whole tokens, so it has to be scaled by
         // the mint's decimals to become a raw amount. `MIN.pow(decimals)` was doing
         // something else entirely: 3.pow(6) is 729, or 0.000729 of a token.
+        // let one_token  = 10 ^ self.mint_to_raise.decimals as u32;
+        // let minimum = MIN_AMOUNT_TO_RAISE * one_token;
         let one_token = 10u64
             .checked_pow(self.mint_to_raise.decimals as u32)
             .ok_or(FundraiserError::InvalidAmount)?;
@@ -52,7 +56,15 @@ impl<'info> Initialize<'info> {
             .checked_mul(one_token)
             .ok_or(FundraiserError::InvalidAmount)?;
 
+        // amount is not raised to its own decimals when its being compared to its minimum
         require!(amount > minimum, FundraiserError::InvalidAmount);
+
+        // The reward mint must never share the raise mint's decimals. saturating_add
+        // can only collapse them into a match for a raise mint near 255 decimals.
+        require!(
+            self.reward_mint.decimals > self.mint_to_raise.decimals,
+            FundraiserError::InvalidRewardDecimals
+        );
 
         // Initialize the fundraiser account
         self.fundraiser.set_inner(Fundraiser {
@@ -62,9 +74,9 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
         });
-        
+
         Ok(())
     }
 }

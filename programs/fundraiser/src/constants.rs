@@ -3,3 +3,5 @@ pub const MIN_AMOUNT_TO_RAISE: u64 = 3;
 pub const SECONDS_TO_DAYS: i64 = 86400;
 pub const MAX_CONTRIBUTION_PERCENTAGE: u64 = 10;
 pub const PERCENTAGE_SCALER: u64 = 100;
+pub const REWARD_DECIMALS_OFFSET: u8 = 3;
+pub const REWARD_MINT_SEED: &[u8] = b"reward_mint";

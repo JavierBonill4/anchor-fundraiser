@@ -12,6 +12,7 @@ import {
   createMintToInstruction,
   getAssociatedTokenAddressSync,
   unpackAccount,
+  createTransferInstruction
 } from "@solana/spl-token";
 import { assert, AssertionError } from "chai";
 
@@ -57,7 +58,9 @@ describe("fundraiser — the window closes (bankrun)", () => {
     const tx = new anchor.web3.Transaction();
     // Fetch it each time: two identical transactions on the same blockhash are
     // the same transaction, and the bank rejects the second as already processed.
-    const [blockhash] = await context.banksClient.getLatestBlockhash();
+    const latestBlockhash = await context.banksClient.getLatestBlockhash();
+    if (!latestBlockhash) throw new Error("Failed to fetch a recent blockhash");
+    const [blockhash] = latestBlockhash;
     tx.recentBlockhash = blockhash;
     tx.feePayer = payer.publicKey;
     tx.add(...ixs);
@@ -181,6 +184,14 @@ describe("fundraiser — the window closes (bankrun)", () => {
     );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+    const [rewardMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("reward_mint"), fundraiser.toBuffer()],
+      program.programId
+    );
+    const rewardAta = getAssociatedTokenAddressSync(rewardMint, payer.publicKey);
+    const makerRewardAta = getAssociatedTokenAddressSync(rewardMint, maker.publicKey);
+    const REWARD = BigInt(CONTRIBUTION) * 1000n; // 6 decimals -> 9 decimals
+
     await send(
       [
         await program.methods
@@ -229,6 +240,12 @@ describe("fundraiser — the window closes (bankrun)", () => {
       "the contribution should be in the vault"
     );
 
+    assert.strictEqual(
+      await tokenBalance(rewardAta),
+      REWARD,
+      "the contribution should have minted its reward"
+    );
+
     // --- day 8: past the deadline, and short of the target ---------------
     await advanceDays(8n);
 
@@ -240,9 +257,9 @@ describe("fundraiser — the window closes (bankrun)", () => {
         "the contribution should be refused because the window has closed");
     }
 
-    // The campaign failed, so the money has to be reachable again.
-    await send([
-      await program.methods
+        // The campaign failed, so the money has to be reachable again.
+    const refundIx = () =>
+      program.methods
         .refund()
         .accountsPartial({
           contributor: payer.publicKey,
@@ -255,8 +272,37 @@ describe("fundraiser — the window closes (bankrun)", () => {
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
-        .instruction(),
+        .instruction();
+
+    // The refund burns the reward, so a contributor who moved it away is stuck.
+    await send([
+      createAssociatedTokenAccountInstruction(payer.publicKey, makerRewardAta, maker.publicKey, rewardMint),
+      createTransferInstruction(rewardAta, makerRewardAta, payer.publicKey, REWARD),
     ]);
+
+    try {
+      await send([await refundIx()]);
+      assert.fail("a refund must be refused while the reward has been moved away");
+    } catch (err) {
+      assertErrorIs(err, "RewardBalanceTooLow",
+        "the refund should be refused because the reward cannot be burned");
+    }
+    assert.strictEqual(
+      await tokenBalance(vault),
+      BigInt(CONTRIBUTION),
+      "a refused refund must not move any money"
+    );
+
+    // Return the reward and refund in one transaction. The transfer also makes this
+    // transaction differ from the refused one, which bankrun would otherwise
+    // treat as already processed on the same blockhash.
+    await send(
+      [
+        createTransferInstruction(makerRewardAta, rewardAta, maker.publicKey, REWARD),
+        await refundIx(),
+      ],
+      [maker]
+    );
 
     assert.strictEqual(await tokenBalance(vault), 0n, "the vault should be empty");
     assert.strictEqual(
@@ -264,5 +310,8 @@ describe("fundraiser — the window closes (bankrun)", () => {
       BigInt(10 * CONTRIBUTION),
       "the contributor should have every token back"
     );
+    assert.strictEqual(await tokenBalance(rewardAta), 0n, "the reward should be burned");
   });
-});
+
+    
+  });
