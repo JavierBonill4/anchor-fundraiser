@@ -490,3 +490,70 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+
+## What I built: a contribution receipt
+
+The first time someone contributes to a fundraiser, they get a special
+token sent to their wallet, proof they backed that campaign. Only one of
+these can ever exist per person per campaign. It's theirs to keep, whether
+the campaign succeeds or fails, and they can hold onto it or send it to
+someone else if they want.
+
+## How it works
+
+I didn't need to add any new fields to track "has this person given
+before." That information was already there. Every contributor already has
+a record of how much they've given, and it starts at zero. So checking "is
+their total still zero right before I add this contribution" tells me
+whether this is their first time, with nothing extra to store.
+
+What I did add is the token itself, a new account created the first time
+someone contributes. Its address is worked out automatically from the
+campaign and the contributor's wallet, so nothing needs to remember where
+it lives.
+
+This all happens inside the existing "contribute" step, right after the
+money moves. There's no separate button or extra step for the user. It just
+happens automatically the first time, and does nothing on every visit
+after that.
+
+One real problem I ran into: I originally tried to lock the token down
+permanently right after creating it, so it could truly never be copied. But
+this broke every contribution after the first one. The program refused
+them. It turned out the lock-down step conflicted with a check the program
+runs on every single contribution, not just the first. Removing that
+lock-down step fixed it. The token is still effectively one-of-a-kind in
+practice, because the only thing capable of creating it is this program
+itself, running this exact code. Nothing else has the "key" needed to make
+another one, even without a formal lock in place.
+
+## What it costs
+
+- A little bit of one-time setup cost, paid once by the contributor, the
+  first time they give. This covers the space the new token needs on-chain.
+- Every contribution after their first costs exactly the same as before I
+  added this feature. Nothing extra happens, so nothing extra is paid.
+
+## Where it's weak
+
+- **If someone gets a refund, they keep the token anyway.** I chose this on
+  purpose. Think of it as a keepsake proving you took part, not a live
+  badge saying you're still involved. The downside: someone could get their
+  money back and still show off something that looks like ongoing support.
+- **The lock isn't as absolute as it could be.** Because I couldn't
+  permanently disable further copies (see above), it technically still says
+  "more could be made" if you look closely at the token's settings, even
+  though nothing currently in the program can actually do that. If someone
+  later modified the program carelessly, that safety net wouldn't be there.
+- **No name or picture.** Right now it's just a bare token with no label.
+  A wallet app would show it as an unnamed item, not something that visibly
+  says "campaign receipt." Adding that was possible but I left it out to
+  keep things simple and on schedule.
+
+## Testing
+
+I added three tests: one checks that giving for the first time creates
+exactly one token, one checks that giving a second time doesn't create a
+second token, and one checks that nobody can create a second token by
+building their own transaction from outside the program.
