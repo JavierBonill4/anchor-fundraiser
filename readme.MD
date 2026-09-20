@@ -490,3 +490,97 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+## Milestone unlocks
+
+### What I built
+On-chain flags at 25%, 50% and 75% of the fundraising target.
+Each flag is set once. A contribution that crosses a mark fires
+it even if the vault never sat exactly on that number.
+A refund does not unset a flag.
+
+### Why
+A campaign sitting at 60% is a different object from one at 10%.
+The starter only stores a running total. A client can now read
+`milestones_fired` or subscribe to `MilestoneReached` instead of
+polling the vault and doing the division itself.
+
+### How
+- `milestones_fired: u8` appended to `Fundraiser` (bit 0 = 25%, bit 1 = 50%, bit 2 = 75%)
+- computed at the end of `contribute` as `current_amount * 4 / amount_to_raise`
+- `emit!(MilestoneReached { fundraiser, milestone })` only when a bit flips 0 → 1
+- new error `Overflow` on every token `checked_add` / `checked_mul`
+
+### What it costs
+- Rent: one extra byte on the existing Fundraiser account. No new PDA.
+  The maker already pays for that account at `initialize`.
+- Compute: one multiply, one divide, at most three bit checks, and an
+  event when a new mark is crossed. Negligible next to the token CPI.
+
+### How you would attack it
+1. Refund after a mark. `current_amount` can fall while the bit stays
+   set, so the account can report “50% reached” for a vault that is no
+   longer there. One-way flags are intentional — a mark that flickers
+   is a worse signal than one that is generous. A front end that needs
+   a live percentage must read `current_amount` (or the vault), not
+   the bitmask.
+2. The 10% per-contributor cap means a single transaction cannot jump
+   two quarters. The loop still handles that case if the cap changes.
+3. Events are logs. A client that only listens and never reads account
+   state can miss a mark if it was offline. The bitmask is the source
+   of truth.
+4. There is no “un-fire” instruction, so a compromised maker cannot
+   clear flags, but they also cannot correct a flag that was set and
+   then refunded away. That is the tradeoff written above.
+
+## Lottery tickets
+
+### What I built
+Each contribution buys a contiguous range of tickets, one ticket per
+raw token. When the vault reaches the target, anyone can call `draw`.
+The program reads SlotHashes, stores `hash[0..8] % total_tickets`,
+and the holder of that number calls `claim_prize` with their own
+Contributor account. The prize is an on-chain flag and an event —
+the vault is left intact so `check_contributions` still works.
+
+### Why
+A program cannot loop Contributor PDAs. Ranges invert the search:
+draw a number, let the winner prove they own it.
+
+### How
+- `total_tickets`, `winning_ticket`, `drawn`, `prize_claimed` on Fundraiser
+- `ticket_start`, `ticket_end` (exclusive) on Contributor
+- tickets issued at the end of `contribute`
+- `draw` requires `vault >= target` and fires once
+- `claim_prize` checks `start <= winning_ticket < end`
+
+### What it costs
+- Fundraiser: 8+8+1+1 extra bytes, paid once by the maker
+- Contributor: 16 extra bytes, paid by that contributor
+- `draw` reads one sysvar and does a modulo; `claim_prize` is a compare
+
+### How you would attack it
+Solana has no private randomness. Every value `draw` can read, the
+caller can read first.
+
+1. Clock is worse. Slot is public and the caller chooses when to send
+   the transaction. They simulate, see they lose, wait a slot, try again.
+2. SlotHashes is the same shape of attack, slightly harder. The most
+   recent hash is public before the tx lands. A crank that is also a
+   contributor simulates `hash % total` off-chain and only submits
+   `draw` in a slot where the result sits in their range. With 10
+   equal donors that is a 1-in-10 wait; with one whale it is easy.
+3. Block producers can influence SlotHashes. Low-stakes only.
+4. Commit–reveal (maker commits `hash(secret)` at initialize, reveals
+   at draw, mix with a value they do not control) stops the caller
+   from shopping slots, but the maker can refuse to reveal. Pair it
+   with a deadline. A VRF (Switchboard / ORAO) is what production uses.
+5. Disjoint ranges: a second contribution after someone else has
+   bought tickets is not stored on that Contributor account. Those
+   later tickets cannot be claimed by them. That is deliberate so a
+   covering interval cannot steal a neighbour's numbers.
+
+I shipped SlotHashes because the brief lists it as the cheap standard
+for low-stakes draws, and I am describing the grind instead of
+pretending it is fair.
+

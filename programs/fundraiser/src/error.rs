@@ -17,5 +17,19 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("An arithmetic operation overflowed")]
+    Overflow,
+    #[msg("No tickets have been issued")]
+    NoTickets,
+    #[msg("The winning ticket has already been drawn")]
+    AlreadyDrawn,
+    #[msg("The winning ticket has not been drawn yet")]
+    NotDrawn,
+    #[msg("This contributor does not hold the winning ticket")]
+    NotAWinner,
+    #[msg("The prize has already been claimed")]
+    PrizeAlreadyClaimed,
+    #[msg("SlotHashes sysvar data is invalid")]
+    InvalidSlotHashes,
 }

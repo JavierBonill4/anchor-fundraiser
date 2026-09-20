@@ -10,4 +10,9 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub milestones_fired: u8, // bit 0 = 25%, bit 1 = 50%, bit 2 = 75%
+    pub total_tickets: u64,
+    pub winning_ticket: u64,
+    pub drawn: bool,
+    pub prize_claimed: bool,
 }

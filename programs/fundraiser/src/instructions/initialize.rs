@@ -62,7 +62,12 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            milestones_fired: 0,
+            total_tickets: 0,
+            winning_ticket: 0,
+            drawn: false,
+            prize_claimed: false,            
         });
         
         Ok(())
