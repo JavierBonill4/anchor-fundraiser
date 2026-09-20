@@ -40,11 +40,7 @@ pub struct Initialize<'info> {
 impl<'info> Initialize<'info> {
     pub fn initialize(&mut self, amount: u64, duration: u8, bumps: &InitializeBumps) -> Result<()> {
 
-        // Check if the amount to raise meets the minimum amount required.
-        //
-        // MIN_AMOUNT_TO_RAISE is a count of whole tokens, so it has to be scaled by
-        // the mint's decimals to become a raw amount. `MIN.pow(decimals)` was doing
-        // something else entirely: 3.pow(6) is 729, or 0.000729 of a token.
+        // Scale the whole-token minimum to the mint's raw units.
         let one_token = 10u64
             .checked_pow(self.mint_to_raise.decimals as u32)
             .ok_or(FundraiserError::InvalidAmount)?;

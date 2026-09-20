@@ -42,4 +42,11 @@ pub mod fundraiser {
 
         Ok(())
     }
+
+    pub fn claim_early_investor_nft(ctx: Context<ClaimEarlyInvestorNft>) -> Result<()> {
+
+        ctx.accounts.claim_early_investor_nft(&ctx.bumps)?;
+
+        Ok(())
+    }
 }
