@@ -1,3 +1,4 @@
+#![allow(unexpected_cfgs)]
 use anchor_lang::prelude::*;
 
 declare_id!("7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW");
@@ -10,6 +11,14 @@ mod constants;
 use instructions::*;
 use error::*;
 pub use constants::*;
+
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub milestone_percentage: u8,
+    pub current_amount: u64,
+    pub target_amount: u64,
+}
 
 #[program]
 pub mod fundraiser {
