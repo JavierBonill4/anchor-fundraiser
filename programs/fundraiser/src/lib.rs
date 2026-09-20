@@ -17,6 +17,20 @@ pub struct MilestoneReached {
     pub milestone: u8, // 1 = 25%, 2 = 50%, 3 = 75%
 }
 
+#[event]
+pub struct WinnerDrawn {
+    pub fundraiser: Pubkey,
+    pub winning_ticket: u64,
+    pub total_tickets: u64,
+}
+
+#[event]
+pub struct PrizeClaimed {
+    pub fundraiser: Pubkey,
+    pub winner: Pubkey,
+    pub winning_ticket: u64,
+}
+
 #[program]
 pub mod fundraiser {
     use super::*;
@@ -48,4 +62,14 @@ pub mod fundraiser {
 
         Ok(())
     }
+
+    pub fn draw(ctx: Context<Draw>) -> Result<()> {
+        ctx.accounts.draw()?;
+        Ok(())
+    }
+
+    pub fn claim_prize(ctx: Context<ClaimPrize>) -> Result<()> {
+        ctx.accounts.claim_prize()?;
+        Ok(())
+    }    
 }

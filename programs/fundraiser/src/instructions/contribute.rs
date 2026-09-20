@@ -112,6 +112,22 @@ impl<'info> Contribute<'info> {
                 });
             }
         }
+
+        let n = amount; // 1 ticket per raw unit
+        let start = self.fundraiser.total_tickets;
+        let end = start
+            .checked_add(n)
+            .ok_or(FundraiserError::Overflow)?;
+
+        if self.contributor_account.ticket_end == 0 {
+            self.contributor_account.ticket_start = start;
+            self.contributor_account.ticket_end = end;
+        } else if self.contributor_account.ticket_end == start {
+            self.contributor_account.ticket_end = end;
+        }
+        // else: gap. counter still advances; this account keeps its old range.
+
+        self.fundraiser.total_tickets = end;        
         
         Ok(())
     }
