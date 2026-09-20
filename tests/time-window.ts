@@ -75,6 +75,8 @@ describe("fundraiser — contribution window", () => {
     vault: anchor.web3.PublicKey;
     contributorAccount: anchor.web3.PublicKey;
     contributorAta: anchor.web3.PublicKey;
+    rewardMint: anchor.web3.PublicKey;
+    contributorRewardAta: anchor.web3.PublicKey;
   };
 
   /**
@@ -124,6 +126,12 @@ describe("fundraiser — contribution window", () => {
     );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+    const [rewardMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("reward"), fundraiser.toBuffer()],
+      program.programId
+    );
+    const contributorRewardAta = getAssociatedTokenAddressSync(rewardMint, provider.publicKey);
+
     await program.methods
       .initialize(new anchor.BN(TARGET), durationDays)
       .accountsPartial({
@@ -131,6 +139,7 @@ describe("fundraiser — contribution window", () => {
         mintToRaise: mint,
         fundraiser,
         vault,
+        rewardMint,
         systemProgram: anchor.web3.SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -139,7 +148,7 @@ describe("fundraiser — contribution window", () => {
       .rpc()
       .then(confirm);
 
-    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
+    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta, rewardMint, contributorRewardAta };
   };
 
   const contribute = (c: Campaign, amount: number) =>
@@ -152,7 +161,10 @@ describe("fundraiser — contribution window", () => {
         contributorAccount: c.contributorAccount,
         contributorAta: c.contributorAta,
         vault: c.vault,
+        rewardMint: c.rewardMint,
+        contributorRewardAta: c.contributorRewardAta,
         tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .rpc();

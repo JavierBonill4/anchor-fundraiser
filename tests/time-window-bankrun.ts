@@ -181,6 +181,12 @@ describe("fundraiser — the window closes (bankrun)", () => {
     );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+    const [rewardMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("reward"), fundraiser.toBuffer()],
+      program.programId
+    );
+    const contributorRewardAta = getAssociatedTokenAddressSync(rewardMint, payer.publicKey);
+
     await send(
       [
         await program.methods
@@ -190,6 +196,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
             mintToRaise: mint,
             fundraiser,
             vault,
+            rewardMint,
             systemProgram: anchor.web3.SystemProgram.programId,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -209,7 +216,10 @@ describe("fundraiser — the window closes (bankrun)", () => {
           contributorAccount,
           contributorAta,
           vault,
+          rewardMint,
+          contributorRewardAta,
           tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
         .instruction();

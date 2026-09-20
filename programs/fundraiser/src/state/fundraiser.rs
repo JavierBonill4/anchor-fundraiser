@@ -10,4 +10,8 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    /// The reward-token mint this fundraiser created and controls. One per
+    /// campaign, authority = the fundraiser PDA itself. `contribute` mints
+    /// from it 1:1 with every contribution; nothing else may.
+    pub reward_mint: Pubkey,
 }

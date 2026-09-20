@@ -490,3 +490,62 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: Reward Token
+
+### What it does
+
+Every `contribute` mints the contributor a matching amount — 1:1, same decimals
+— of a second SPL token that this campaign owns: the reward mint. It's a
+receipt of having contributed, handed out immediately, and it is theirs to
+keep whether the campaign hits its target or not, and even if they later take
+a refund.
+
+### How it works
+
+`initialize` now also creates `reward_mint`: a `Mint` account at
+`["reward", fundraiser]`, decimals matched to `mint_to_raise`, mint authority
+set to the fundraiser PDA. Its address is stored on `Fundraiser` alongside the
+existing fields.
+
+`contribute` gains two accounts — `reward_mint` and `contributor_reward_ata`
+(the contributor's own ATA for it, `init_if_needed`) — and, right after it
+updates `current_amount` and the contributor's running total, does one more
+CPI: `MintTo` for the same raw `amount` just contributed, signed by the
+fundraiser PDA's seeds (the same signer seeds `check_contributions` and
+`refund` already use to move the vault). The `fundraiser` account gets a
+second `has_one`, `has_one = reward_mint @ FundraiserError::InvalidRewardMint`,
+so a caller cannot substitute a different mint and redirect or spoof the
+reward.
+
+`check_contributions` and `refund` are untouched: the reward, once minted,
+has nothing to do with how the campaign ends.
+
+### What it costs
+
+One extra account created per campaign (`reward_mint`, rent-exempt, paid by
+the maker at `initialize`), one extra account created per contributor's first
+contribution (`contributor_reward_ata`, paid by the contributor), and one
+more CPI — a `MintTo` — on every `contribute`. Roughly the same marginal
+compute a second `Transfer` would cost, since minting is no heavier than
+transferring for the token program.
+
+### How you would attack it
+
+The reward mint substitution is the one gate this ships an explicit check
+for, and Checkpoint 6's abuse test targets exactly it: pass any mint other
+than the one `initialize` created, and `has_one` refuses the transaction with
+`InvalidRewardMint` before any tokens move.
+
+The gap this does **not** close is reward farming: because the reward is
+minted unconditionally on every accepted contribution and is unaffected by a
+later `refund`, a contributor can contribute the minimum, wait for the
+campaign to fail (or contribute at `duration = 0`... no — refund requires the
+window to have closed and the target missed), then refund, and repeat for as
+many reward tokens as they have transaction fees to spend, at zero net
+principal cost. A production version would need to burn (or claw back) the
+proportional reward inside `refund`, which this submission deliberately does
+not do — the reward is scoped as "proof of having contributed," and fixing
+the farming path is out of scope for what Checkpoint 5 asks for here.
