@@ -1,7 +1,8 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
-import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
+import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo, getMint, getAccount, createAssociatedTokenAccountInstruction, createTransferInstruction } from "@solana/spl-token";
+import { assert } from "chai";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
 
 describe("fundraiser", () => {
@@ -24,6 +25,10 @@ describe("fundraiser", () => {
   const fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
 
   const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+
+  const receiptMint = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("receipt"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+
+  const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey, false, TOKEN_2022_PROGRAM_ID);
 
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
@@ -86,6 +91,10 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint,
+      contributorReceiptAta,
+      token2022Program: TOKEN_2022_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       tokenProgram: TOKEN_PROGRAM_ID,
     })
     .rpc({
@@ -99,6 +108,14 @@ describe("fundraiser", () => {
 
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
+
+    // 1. Happy path: receipt NFT minted correctly
+    const receiptAta = await getAccount(provider.connection, contributorReceiptAta, undefined, TOKEN_2022_PROGRAM_ID);
+    assert.strictEqual(receiptAta.amount.toString(), "1", "receipt ATA should have exactly 1 token");
+
+    const receiptMintAccount = await getMint(provider.connection, receiptMint, undefined, TOKEN_2022_PROGRAM_ID);
+    assert.strictEqual(receiptMintAccount.supply.toString(), "1", "receipt mint supply should be exactly 1");
+    assert.isNull(receiptMintAccount.mintAuthority, "mint authority should be permanently revoked");
   });
   it("Contribute to Fundraiser", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
@@ -111,6 +128,10 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint,
+      contributorReceiptAta,
+      token2022Program: TOKEN_2022_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       tokenProgram: TOKEN_PROGRAM_ID,
     })
     .rpc({
@@ -124,6 +145,42 @@ describe("fundraiser", () => {
 
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
+
+    // 2. Boundary / no-duplicate: second contribution
+    const receiptMintAccount2 = await getMint(provider.connection, receiptMint, undefined, TOKEN_2022_PROGRAM_ID);
+    assert.strictEqual(receiptMintAccount2.supply.toString(), "1", "receipt mint supply should STILL be exactly 1 after second contribution");
+  });
+
+  it("Abuse case, transferability: cannot transfer receipt token", async () => {
+    // Attempt to transfer the contributor's receipt token to the maker
+    const destAta = getAssociatedTokenAddressSync(receiptMint, maker.publicKey, false, TOKEN_2022_PROGRAM_ID);
+    const tx = new anchor.web3.Transaction().add(
+      createAssociatedTokenAccountInstruction(
+        provider.publicKey,
+        destAta,
+        maker.publicKey,
+        receiptMint,
+        TOKEN_2022_PROGRAM_ID
+      ),
+      createTransferInstruction(
+        contributorReceiptAta,
+        destAta,
+        provider.publicKey,
+        1,
+        [],
+        TOKEN_2022_PROGRAM_ID
+      )
+    );
+
+    try {
+      await provider.sendAndConfirm(tx);
+      assert.fail("Transfer should have been rejected by the NonTransferable extension");
+    } catch (err: any) {
+      const errStr = err.toString();
+      // Error code 37 (0x25) is spl-token's ExtensionError for NonTransferable
+      const isExpectedError = errStr.includes("0x25") || errStr.includes("37") || errStr.includes("ExtensionError") || errStr.includes("disabled");
+      assert.isTrue(isExpectedError, `Expected NonTransferable error (0x25), got: ${errStr}`);
+    }
   });
 
   it("Contribute to Fundraiser - Robustness Test", async () => {
@@ -138,6 +195,10 @@ describe("fundraiser", () => {
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,
+        receiptMint,
+        contributorReceiptAta,
+        token2022Program: TOKEN_2022_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .rpc({
@@ -200,6 +261,9 @@ describe("fundraiser", () => {
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,
+        receiptMint,
+        contributorReceiptAta,
+        token2022Program: TOKEN_2022_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })

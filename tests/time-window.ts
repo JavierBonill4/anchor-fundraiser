@@ -4,6 +4,7 @@ import { Fundraiser } from "../target/types/fundraiser";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   createMint,
   getAssociatedTokenAddressSync,
   getOrCreateAssociatedTokenAccount,
@@ -75,6 +76,8 @@ describe("fundraiser — contribution window", () => {
     vault: anchor.web3.PublicKey;
     contributorAccount: anchor.web3.PublicKey;
     contributorAta: anchor.web3.PublicKey;
+    receiptMint: anchor.web3.PublicKey;
+    contributorReceiptAta: anchor.web3.PublicKey;
   };
 
   /**
@@ -124,6 +127,14 @@ describe("fundraiser — contribution window", () => {
     );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+      program.programId
+    );
+    const contributorReceiptAta = getAssociatedTokenAddressSync(
+      receiptMint, provider.publicKey, false, TOKEN_2022_PROGRAM_ID
+    );
+
     await program.methods
       .initialize(new anchor.BN(TARGET), durationDays)
       .accountsPartial({
@@ -139,7 +150,7 @@ describe("fundraiser — contribution window", () => {
       .rpc()
       .then(confirm);
 
-    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
+    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta, receiptMint, contributorReceiptAta };
   };
 
   const contribute = (c: Campaign, amount: number) =>
@@ -152,6 +163,10 @@ describe("fundraiser — contribution window", () => {
         contributorAccount: c.contributorAccount,
         contributorAta: c.contributorAta,
         vault: c.vault,
+        receiptMint: c.receiptMint,
+        contributorReceiptAta: c.contributorReceiptAta,
+        token2022Program: TOKEN_2022_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
@@ -168,6 +183,9 @@ describe("fundraiser — contribution window", () => {
         contributorAccount: c.contributorAccount,
         contributorAta: c.contributorAta,
         vault: c.vault,
+        receiptMint: c.receiptMint,
+        contributorReceiptAta: c.contributorReceiptAta,
+        token2022Program: TOKEN_2022_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
