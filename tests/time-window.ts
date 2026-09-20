@@ -142,8 +142,13 @@ describe("fundraiser — contribution window", () => {
     return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
   };
 
-  const contribute = (c: Campaign, amount: number) =>
-    program.methods
+  const contribute = (c: Campaign, amount: number) => {
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), c.fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+      program.programId
+    );
+    const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey);
+    return program.methods
       .contribute(new anchor.BN(amount))
       .accountsPartial({
         contributor: provider.publicKey,
@@ -152,10 +157,14 @@ describe("fundraiser — contribution window", () => {
         contributorAccount: c.contributorAccount,
         contributorAta: c.contributorAta,
         vault: c.vault,
+        receiptMint,
+        contributorReceiptAta,
         tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .rpc();
+  };
 
   const refund = (c: Campaign) =>
     program.methods
