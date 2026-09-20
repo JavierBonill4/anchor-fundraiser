@@ -490,3 +490,55 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Ticket Raffle & Lottery Feature
+
+### 1. What it does
+Contributing to a fundraiser automatically buys raffle tickets in exact 1:1 proportion to the token amount contributed. When the campaign succeeds (meets its funding target), a single winning ticket number is drawn from the total tickets issued. The contributor holding that ticket number wins a **10% slice of the vault**, while the campaign maker collects the remaining 90%.
+
+Because Solana programs cannot enumerate accounts on-chain, ticket ownership is assigned as a contiguous range `[ticket_start, ticket_end)` on each contributor's account. This inverts the verification model: the program never needs to know who is playing or iterate through accounts — when a ticket is drawn, the winner proves their win on-chain by passing their own account to claim the prize.
+
+### 2. How it works
+- **State Added**:
+  - On `Fundraiser`:
+    - `total_tickets: u64`: Running tally of all tickets issued across contributions.
+    - `winner_drawn: bool`: Guard flag indicating whether the draw has taken place.
+    - `winning_ticket: u64`: The pseudo-random winning ticket number.
+    - `prize_claimed: bool`: Guard flag preventing double claims.
+  - On `Contributor`:
+    - `ticket_start: u64`: Lower bound of the owned ticket range (inclusive).
+    - `ticket_end: u64`: Upper bound of the owned ticket range (exclusive).
+- **Where It Fires**:
+  - `contribute`: When a contribution is made, `tickets = amount` are allocated. First-time contributors receive `[total_tickets, total_tickets + tickets)`. Immediate repeat contributions extend `ticket_end` contiguously. If another contributor has entered in between, the non-contiguous repeat contribution is rejected (`FundraiserError::NonContiguousContribution`).
+  - `draw_winner`: Can be triggered by anyone once `current_amount >= amount_to_raise`. It reads recent blockhashes from Solana's on-chain `SlotHashes` sysvar, derives `winning_ticket = hash % total_tickets`, locks the draw (`winner_drawn = true`), and emits a `WinnerDrawn` event.
+  - `claim_prize`: The winner passes their `Contributor` PDA. The program verifies that `ticket_start <= winning_ticket < ticket_end` and `prize_claimed == false`. It then transfers 10% of the vault to the winner's ATA using PDA signer seeds, sets `prize_claimed = true`, and emits a `PrizeClaimed` event.
+- **Accounts Involved**:
+  - In `draw_winner`: `caller` (Signer), `fundraiser` (PDA), and `slot_hashes` (`SysvarS1otHashes111111111111111111111111111`).
+  - In `claim_prize`: `winner` (Signer), `fundraiser` (PDA), `contributor_account` (PDA), `vault` (TokenAccount), `winner_ata` (TokenAccount), and `token_program`.
+
+### 3. What it costs
+- **Extra Rent**:
+  - `Fundraiser`: 18 additional bytes (`total_tickets`: 8, `winner_drawn`: 1, `winning_ticket`: 8, `prize_claimed`: 1). At ~0.00000696 SOL/byte, this adds ~0.000125 SOL to the rent-exempt reserve, paid once by the maker at initialization.
+  - `Contributor`: 16 additional bytes (`ticket_start`: 8, `ticket_end`: 8), adding ~0.000111 SOL to the contributor PDA rent, paid by each contributor.
+  - **New PDAs**: Zero additional PDAs created, avoiding new account creation fees and lookup overhead.
+- **Compute Units**:
+  - `contribute`: +~1,500 CU for ticket range math and contiguous boundary checks.
+  - `draw_winner`: ~12,500 CU total (reads raw byte slice from `SlotHashes` sysvar without expensive deserialization, followed by modulo arithmetic).
+  - `claim_prize`: ~28,000 CU total (evaluates ticket range constraints and executes PDA CPI `transfer` to the winner).
+
+### 4. How you would attack it
+While using `SlotHashes` is vastly superior to `Clock::unix_timestamp`, it is pseudo-random and vulnerable to manipulation:
+
+1. **Off-Chain Simulation & Transaction Withholding (Mempool Snooping)**:
+   Any caller wishing to call `draw_winner` can inspect the latest slot hash off-chain via RPC or mempool before sending the transaction. They simulate `winning_ticket = slot_hash % total_tickets`:
+   - If the drawn ticket falls within their owned range `[ticket_start, ticket_end)`, they immediately submit the transaction with high priority fees to land it in that slot.
+   - If they lose, they withhold the transaction and wait for subsequent slots until a favorable hash appears.
+2. **Validator / Block Leader Grinding**:
+   Solana's slot hash is determined by the hash of all entries within that block. A validator scheduled to lead the slot in which `draw_winner` lands (or a colluding participant) can manipulate the outcome by:
+   - Inserting, omitting, or reordering arbitrary dummy transactions to grind different slot hashes until one generates their winning ticket number.
+   - Censoring competing `draw_winner` transactions if the current slot hash favors a rival.
+3. **Production Alternative**:
+   In production, high-stakes raffles require a Verifiable Random Function (VRF) like Switchboard or ORAO. A VRF generates an unbiasable cryptographic proof off-chain that is verified on-chain, preventing both block producers and participants from predicting or altering the draw.
+

@@ -87,6 +87,14 @@ impl<'info> Contribute<'info> {
             FundraiserError::MaximumContributionsReached
         );
 
+        // If repeat contribution, ensure ticket range can be contiguously extended
+        if self.contributor_account.amount > 0 {
+            require!(
+                self.contributor_account.ticket_end == self.fundraiser.total_tickets,
+                FundraiserError::NonContiguousContribution
+            );
+        }
+
         // Transfer the funds from the contributor to the vault.
         // As of Anchor 1.0 a CpiContext takes the program's *address*, not its
         // AccountInfo.
@@ -100,6 +108,20 @@ impl<'info> Contribute<'info> {
 
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
+
+        // Assign tickets in proportion to the contribution amount
+        let tickets = amount;
+
+        if self.contributor_account.amount == 0 {
+            // First time contribution from this contributor
+            self.contributor_account.ticket_start = self.fundraiser.total_tickets;
+            self.contributor_account.ticket_end = self.fundraiser.total_tickets + tickets;
+            self.fundraiser.total_tickets += tickets;
+        } else {
+            // Repeat contribution: contiguous extension
+            self.contributor_account.ticket_end += tickets;
+            self.fundraiser.total_tickets += tickets;
+        }
 
         // Update the fundraiser and contributor accounts with the new amounts
         self.fundraiser.current_amount += amount;
