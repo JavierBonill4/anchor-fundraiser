@@ -13,7 +13,6 @@ use crate::{
         Fundraiser
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
 };
 
@@ -66,11 +65,35 @@ impl<'info> Contribute<'info> {
 
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
-        // Check if the amount to contribute is less than the maximum allowed contribution
+        let maximum_contribution = self
+            .fundraiser
+            .amount_to_raise
+            .checked_mul(u64::from(self.fundraiser.contribution_cap_percentage))
+            .ok_or(FundraiserError::ArithmeticOverflow)?
+            .checked_div(PERCENTAGE_SCALER)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
+
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= maximum_contribution,
             FundraiserError::ContributionTooBig
         );
+
+        let contributor_total = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
+
+        require!(
+            contributor_total <= maximum_contribution,
+            FundraiserError::MaximumContributionsReached
+        );
+
+        let fundraiser_total = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
 
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
@@ -78,13 +101,6 @@ impl<'info> Contribute<'info> {
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 < self.fundraiser.duration as i64,
             crate::FundraiserError::FundraiserEnded
-        );
-
-        // Check if the maximum contributions per contributor have been reached
-        require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
-            FundraiserError::MaximumContributionsReached
         );
 
         // Transfer the funds from the contributor to the vault.
@@ -101,10 +117,9 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
-
-        self.contributor_account.amount += amount;
+        self.fundraiser.current_amount = fundraiser_total;
+        self.fundraiser.contribution_cap_locked = true;
+        self.contributor_account.amount = contributor_total;
 
         Ok(())
     }

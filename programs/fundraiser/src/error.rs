@@ -17,5 +17,15 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("The contribution cap must be between 1% and 10%")]
+    InvalidContributionCap,
+    #[msg("The contribution cap is locked after the first contribution")]
+    ContributionCapLocked,
+    #[msg("Only the fundraiser maker can update the contribution cap")]
+    UnauthorizedMaker,
+    #[msg("Token amount arithmetic overflowed")]
+    ArithmeticOverflow,
+    #[msg("Token amount arithmetic underflowed")]
+    ArithmeticUnderflow,
 }

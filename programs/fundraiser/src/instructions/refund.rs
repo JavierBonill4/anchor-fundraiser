@@ -57,6 +57,7 @@ impl<'info> Refund<'info> {
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
  
+
         require!(
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 >= self.fundraiser.duration as i64,
@@ -67,6 +68,12 @@ impl<'info> Refund<'info> {
             self.vault.amount < self.fundraiser.amount_to_raise,
             crate::FundraiserError::TargetMet
         );
+
+        let fundraiser_total = self
+            .fundraiser
+            .current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(crate::FundraiserError::ArithmeticUnderflow)?;
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
@@ -93,8 +100,7 @@ impl<'info> Refund<'info> {
         // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        self.fundraiser.current_amount = fundraiser_total;
 
         Ok(())
     }

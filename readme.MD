@@ -490,3 +490,39 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Configurable contribution cap
+
+### What it does
+
+The maker can lower the per-contributor cap from the default 10% to any whole
+percentage from 1% through 10%. The cap can only change before the first
+successful contribution. This lets a campaign limit how much of its target one
+address can fund without allowing the terms to change after fundraising starts.
+
+### How it works
+
+`Fundraiser` stores `contribution_cap_percentage` and
+`contribution_cap_locked` as appended fields. `set_contribution_cap` checks the
+maker signer, validates the range, and refuses updates after the lock is set.
+`contribute` calculates the raw token limit with checked integer arithmetic,
+applies it to both the current instruction and the contributor's cumulative
+amount, then locks the setting after the token transfer succeeds. Contribution
+and refund totals also use checked arithmetic.
+
+### What it costs
+
+The fundraiser account stores two additional bytes, paid by the maker when the
+account is created. The configuration instruction creates no accounts and makes
+no CPIs. Each contribution performs checked multiplication, division, and
+addition before the existing token transfer.
+
+### How it can be abused
+
+The cap applies to an address, not to a person. A contributor can split funds
+across multiple keypairs and receive the full allowance for each one. Preventing
+that requires an identity or allowlist policy outside this program. The maker can
+also choose a restrictive cap until the first contribution lands, so clients
+should read the current value before submitting a contribution.

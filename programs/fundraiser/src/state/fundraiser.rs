@@ -10,4 +10,6 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub contribution_cap_percentage: u8,
+    pub contribution_cap_locked: bool,
 }

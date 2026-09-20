@@ -42,4 +42,8 @@ pub mod fundraiser {
 
         Ok(())
     }
+
+    pub fn set_contribution_cap(ctx: Context<SetContributionCap>, percentage: u8) -> Result<()> {
+        ctx.accounts.set_contribution_cap(percentage)
+    }
 }
