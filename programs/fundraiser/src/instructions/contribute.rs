@@ -1,10 +1,15 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{
+        mint_to,
+        Mint,
+        MintTo,
+        transfer,
+        Token,
+        TokenAccount,
+        Transfer
+    }
 };
 
 use crate::{
@@ -49,6 +54,24 @@ pub struct Contribute<'info> {
         associated_token::authority = fundraiser
     )]
     pub vault: Account<'info, TokenAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        seeds = [b"receipt", fundraiser.key().as_ref(), contributor.key().as_ref()],
+        bump,
+        mint::decimals = 0,
+        mint::authority = fundraiser,
+    )]
+    pub receipt_mint: Account<'info, Mint>,
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        associated_token::mint = receipt_mint,
+        associated_token::authority = contributor,
+    )]
+    pub receipt_ata: Account<'info, TokenAccount>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
@@ -60,6 +83,9 @@ impl<'info> Contribute<'info> {
         //
         // The previous form was `1_u8.pow(decimals)`, and 1 raised to any power is 1
         // — so the check only ever rejected a contribution of a single raw unit.
+         let is_first_contribution = self.contributor_account.amount == 0;
+
+
         let one_token = 10u64
             .checked_pow(self.mint_to_raise.decimals as u32)
             .ok_or(FundraiserError::ContributionTooSmall)?;
@@ -106,6 +132,28 @@ impl<'info> Contribute<'info> {
 
         self.contributor_account.amount += amount;
 
+        // Mint receipt tokens to the contributor
+    if is_first_contribution {
+        require!(self.receipt_mint.supply == 0, FundraiserError::ReceiptAlreadyMinted);
+
+        let signer_seeds: [&[&[u8]]; 1] = [&[
+            b"fundraiser".as_ref(),
+            self.fundraiser.maker.as_ref(),
+            &[self.fundraiser.bump],
+        ]];
+
+        let mint_cpi_accounts = MintTo {
+            mint: self.receipt_mint.to_account_info(),
+            to: self.receipt_ata.to_account_info(),
+            authority: self.fundraiser.to_account_info(),
+        };
+        let mint_cpi_ctx = CpiContext::new_with_signer(
+            self.token_program.key(),
+            mint_cpi_accounts,
+            &signer_seeds,
+        );
+        mint_to(mint_cpi_ctx, 1)?;
+    }
         Ok(())
     }
 }
