@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { Fundraiser } from "../target/types/fundraiser";
+import { Fundraiser } from "../../target/types/fundraiser";
 import { startAnchor, BankrunProvider } from "anchor-bankrun";
 import { Clock, ProgramTestContext } from "solana-bankrun";
 import {
@@ -44,7 +44,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
 
     // Built from the IDL rather than `anchor.workspace`, so this file does not
     // depend on the workspace being resolvable at import time.
-    const idl = require("../target/idl/fundraiser.json");
+    const idl = require("../../target/idl/fundraiser.json");
     program = new anchor.Program<Fundraiser>(idl, provider);
     payer = context.payer;
   });
