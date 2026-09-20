@@ -1,11 +1,14 @@
 use anchor_lang::prelude::*;
 
-declare_id!("7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW");
+declare_id!("8arsQKPz4bK6mAp4hPMAtudwBjWy1qodzXCEcguqccA8");
 
 mod state;
 mod instructions;
 mod error;
 mod constants;
+
+#[cfg(test)]
+mod tests;
 
 use instructions::*;
 use error::*;
@@ -39,6 +42,13 @@ pub mod fundraiser {
     pub fn refund(ctx: Context<Refund>) -> Result<()> {
 
         ctx.accounts.refund()?;
+
+        Ok(())
+    }
+
+    pub fn claim_token_reward(ctx: Context<ClaimTokenReward>) -> Result<()> {
+
+        ctx.accounts.claim_token_reward()?;
 
         Ok(())
     }
