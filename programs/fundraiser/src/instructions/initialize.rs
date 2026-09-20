@@ -62,6 +62,8 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
+            // No campaign starts having passed anything.
+            milestones_reached: 0,
             bump: bumps.fundraiser
         });
         
