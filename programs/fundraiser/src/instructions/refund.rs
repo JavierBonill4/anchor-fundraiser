@@ -1,10 +1,18 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
+use anchor_spl::{
+    token::{
+        transfer, 
+        Mint, 
+        Token, 
+        TokenAccount, 
+        Transfer
+    },
+    token_2022::{
+        self as token_2022_cpi,
+        Burn as T22Burn,
+        Token2022,
+    },
+    token_interface::TokenAccount as InterfaceTokenAccount,
 };
 
 use crate::{
@@ -12,6 +20,7 @@ use crate::{
         Contributor, 
         Fundraiser
     }, 
+    RECEIPT_SEED,
     SECONDS_TO_DAYS
 };
 
@@ -47,6 +56,25 @@ pub struct Refund<'info> {
         associated_token::authority = fundraiser
     )]
     pub vault: Account<'info, TokenAccount>,
+
+    /// CHECK: Validated via seeds constraint.
+    #[account(
+        mut,
+        seeds = [RECEIPT_SEED, fundraiser.key().as_ref(), contributor.key().as_ref()],
+        bump,
+    )]
+    pub receipt_mint: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        associated_token::mint = receipt_mint,
+        associated_token::authority = contributor,
+        associated_token::token_program = token_2022_program,
+    )]
+    pub contributor_receipt_ata: InterfaceAccount<'info, InterfaceTokenAccount>,
+
+    pub token_2022_program: Program<'info, Token2022>,
+
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
@@ -67,6 +95,26 @@ impl<'info> Refund<'info> {
             self.vault.amount < self.fundraiser.amount_to_raise,
             crate::FundraiserError::TargetMet
         );
+
+        // ── Burn the contributor's receipt NFT ─────────────────────────
+        //
+        // This is done before the vault transfer to fail fast: if the burn
+        // fails (e.g. they don't have the receipt), we save the compute cost
+        // of executing the transfer. However, because the entire instruction
+        // is atomic, the order does not change the correctness — if the burn
+        // were placed after the transfer and failed, the transfer would be
+        // reverted anyway.
+        token_2022_cpi::burn(
+            CpiContext::new(
+                self.token_2022_program.key(),
+                T22Burn {
+                    mint:      self.receipt_mint.to_account_info(),
+                    from:      self.contributor_receipt_ata.to_account_info(),
+                    authority: self.contributor.to_account_info(),
+                },
+            ),
+            1, // burn exactly 1 receipt
+        )?;
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
