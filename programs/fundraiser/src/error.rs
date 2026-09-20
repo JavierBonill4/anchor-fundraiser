@@ -17,5 +17,11 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("Arithmetic overflow")]
+    Overflow,
+    #[msg("Only a contributor who contributed before the fundraiser reached 50% of its target qualifies for the early-investor NFT")]
+    NotEarlyInvestor,
+    #[msg("The early-investor NFT has already been claimed")]
+    NftAlreadyClaimed,
 }

@@ -9,11 +9,12 @@ use anchor_spl::token::{
 
 use crate::{
     state::{
-        Contributor, 
+        Contributor,
         Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
+    }, FundraiserError,
+    ANCHOR_DISCRIMINATOR,
+    EARLY_INVESTOR_THRESHOLD_DENOMINATOR,
+    MAX_CONTRIBUTION_PERCENTAGE,
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
 };
 
@@ -56,19 +57,23 @@ pub struct Contribute<'info> {
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
 
-        // Check that the contribution is at least one whole token.
-        //
-        // The previous form was `1_u8.pow(decimals)`, and 1 raised to any power is 1
-        // — so the check only ever rejected a contribution of a single raw unit.
+        // Scale one whole token to the mint's raw units.
         let one_token = 10u64
             .checked_pow(self.mint_to_raise.decimals as u32)
             .ok_or(FundraiserError::ContributionTooSmall)?;
 
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
+        let max_contribution = self
+            .fundraiser
+            .amount_to_raise
+            .checked_mul(MAX_CONTRIBUTION_PERCENTAGE)
+            .ok_or(FundraiserError::Overflow)?
+            / PERCENTAGE_SCALER;
+
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= max_contribution,
             FundraiserError::ContributionTooBig
         );
 
@@ -81,15 +86,24 @@ impl<'info> Contribute<'info> {
         );
 
         // Check if the maximum contributions per contributor have been reached
+        let contributor_total = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            self.contributor_account.amount <= max_contribution
+                && contributor_total <= max_contribution,
             FundraiserError::MaximumContributionsReached
         );
 
+        let fundraiser_total = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
         // Transfer the funds from the contributor to the vault.
-        // As of Anchor 1.0 a CpiContext takes the program's *address*, not its
-        // AccountInfo.
         let cpi_accounts = Transfer {
             from: self.contributor_ata.to_account_info(),
             to: self.vault.to_account_info(),
@@ -101,10 +115,22 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Crossing 50% still qualifies because this uses the pre-transfer total.
+        let was_below_half = self
+            .fundraiser
+            .current_amount
+            .checked_mul(EARLY_INVESTOR_THRESHOLD_DENOMINATOR)
+            .ok_or(FundraiserError::Overflow)?
+            < self.fundraiser.amount_to_raise;
 
-        self.contributor_account.amount += amount;
+        if was_below_half {
+            self.contributor_account.is_early_investor = true;
+        }
+
+        // Update the fundraiser and contributor accounts with the new amounts
+        self.fundraiser.current_amount = fundraiser_total;
+
+        self.contributor_account.amount = contributor_total;
 
         Ok(())
     }

@@ -490,3 +490,93 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Early-Investor NFT
+
+### What it does
+
+Any contributor whose contribution lands while the fundraiser is still under 50% of its
+target can claim a one-of-one Metaplex NFT — name "Early Investor", symbol "EARLY" — proof
+they were there before the halfway mark. One NFT per qualifying contributor, claimed on
+demand rather than handed out automatically.
+
+### How it works
+
+- `Contributor` gets two appended fields: `is_early_investor: bool` and
+  `nft_claimed: bool`. Existing deployed accounts would need migration or
+  reallocation because their allocated size is smaller.
+- `contribute` sets `is_early_investor = true` at the end of the instruction, using the
+  fundraiser's `current_amount` *before* this contribution is added — checked with
+  `checked_mul(2)` against `amount_to_raise`, so a contribution that itself pushes the
+  total past 50% still counts for the contributor who made it.
+- A new instruction, `claim_early_investor_nft`, mints the NFT: a program-derived mint
+  (`["early-investor-mint", fundraiser, contributor]`), a Metaplex Metadata account, and a
+  Master Edition with `max_supply = 0`. Creating the Master Edition revokes the mint's own
+  authority, so the supply is permanently fixed at one — an actual NFT, not an SPL token
+  with a name attached.
+- Minting is signed by a dedicated PDA (`["early-investor-authority", fundraiser]`),
+  independent of the `Fundraiser` account itself, so a claim still works even after
+  `check_contributions` closes that account on a successful campaign.
+- `contributor_account` carries two account-level constraints —
+  `is_early_investor` and `!nft_claimed` — so an ineligible or repeat claim is rejected with
+  a named error before any account creation is attempted. (Anchor evaluates every `init`
+  field before any other field's constraints, so the mint/ATA accounts are created by hand
+  in the handler, after these checks, rather than via `init` — otherwise a second claim
+  would fail on a raw "account already in use" instead of `NftAlreadyClaimed`.)
+- The metadata is created with `is_mutable = false`: once claimed, nobody — not even the
+  program — can change the name, symbol, or URI afterward.
+- `EARLY_INVESTOR_NFT_URI` is a placeholder and must point to uploaded JSON before a real
+  deployment; the tests intentionally verify only the on-chain name and symbol.
+
+### What it costs
+
+- Claiming consumes about 153,000 of the 200,000 compute units available per instruction
+  (mint creation + initialization, ATA creation, `mint_to`, and two Metaplex CPIs) —
+  comfortably inside the default budget, but not by a wide margin.
+- A claim costs roughly 0.0196 SOL on the local validator, paid by the contributor.
+  That covers rent for the mint, token account, metadata, and master edition plus
+  Metaplex's account-creation charge. Exact rent can change with cluster settings.
+- `contribute` adds one eligibility multiplication and, when eligible, one boolean write.
+
+### How I would attack it
+
+The on-chain logic can't tell a genuine fundraiser from a sham one. `initialize` lets
+anyone open a campaign under their own key with a target as low as a few whole tokens, so
+an attacker can open a throwaway fundraiser, contribute to their own campaign as its very
+first backer — `current_amount` is 0, always below half of any target — and claim an
+"Early Investor" NFT for the price of rent and a couple of transactions, with zero genuine
+early support of anything. Nothing here scopes the reward to fundraisers a maker didn't
+create for themselves; it only ever proves "contributed before 50% of *some* campaign,"
+not "backed something real."
+
+A contributor can also claim first and later refund a failed fundraiser while keeping the
+NFT. The receipt therefore proves that a qualifying contribution happened, not that the
+contributor kept funds committed. If they refund before claiming, `refund` closes the
+`Contributor` account and the unclaimed reward is lost.
+
+### Testing
+
+Run the suite with Anchor 1.1.2 and the Solana validator:
+
+```sh
+anchor test --validator legacy
+```
+
+The default Surfpool backend requires a compatible recent Surfpool build to load the SBF
+artifact. Four tests in `tests/early-investor-nft.ts` cover:
+
+- **Happy path** — contributes early, claims, and asserts on the resulting on-chain state:
+  mint supply of exactly one, the contributor's token balance, and the Metaplex Metadata
+  account's `name`/`symbol` read back and checked against the expected values.
+- **Boundary** — five max-sized contributions land a fundraiser exactly on 50%; the
+  contributor who tips it over the edge is flagged early, and the very next contributor,
+  arriving at exactly 50%, is not.
+- **Abuse** — claiming twice fails with `NftAlreadyClaimed`; claiming without qualifying
+  fails with `NotEarlyInvestor`.
+- **Arithmetic** — an overflowing contribution-cap calculation fails with the named
+  `Overflow` error rather than a program panic.
+
+Commenting out the eligibility check in `contribute` turns the feature tests red, and every
+original instruction and its tests keep passing unchanged.
