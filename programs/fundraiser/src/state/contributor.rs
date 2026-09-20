@@ -4,4 +4,6 @@ use anchor_lang::prelude::*;
 #[derive(InitSpace)]
 pub struct Contributor {
     pub amount: u64,
+    pub ticket_start: u64,
+    pub ticket_end: u64,
 }

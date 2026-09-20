@@ -10,4 +10,8 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub total_tickets: u64,
+    pub winner_drawn: bool,
+    pub winning_ticket: u64,
+    pub prize_claimed: bool,
 }
