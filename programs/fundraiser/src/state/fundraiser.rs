@@ -10,4 +10,8 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    // Appended at the end so Borsh layout remains stable for existing accounts.
+    // Bit 0 = 25%, bit 1 = 50%, bit 2 = 75%. This is a one-way flag set once
+    // a threshold is crossed; refunds do not un-fire a milestone.
+    pub milestones_fired: u8,
 }
