@@ -14,7 +14,9 @@ use crate::{
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    PERCENTAGE_SCALER, SECONDS_TO_DAYS,
+    MILESTONE_PERCENTAGES,
+    events::MilestoneReached,
 };
 
 #[derive(Accounts)]
@@ -101,10 +103,72 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Update the fundraiser and contributor accounts with the new amounts.
+        // checked_add rather than +=: a wrapped total would silently reset the
+        // campaign's progress, and the milestone check below reads this value.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::InvalidAmount)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::InvalidAmount)?;
+
+        self.emit_milestones()?;
+
+        Ok(())
+    }
+
+    /// Emits a `MilestoneReached` event for every threshold the running total
+    /// has newly crossed, and records it in the sticky bitmask.
+    ///
+    /// Three properties this has to hold, in order of how easy they are to get
+    /// wrong:
+    ///
+    /// 1. **No skipping.** One contribution can cross several thresholds at
+    ///    once — 20% to 80% passes all three. Every crossed milestone fires,
+    ///    lowest first, rather than only the highest.
+    /// 2. **Fires once.** The bitmask is never cleared, not even by a refund
+    ///    that drops the total back below a threshold. Without that, a
+    ///    contribute/refund cycle could replay the same milestone.
+    /// 3. **No floats, no overflow.** The comparison is
+    ///    `current * 100 >= target * pct`, so there is no division and no
+    ///    rounding. Both sides use checked_mul.
+    fn emit_milestones(&mut self) -> Result<()> {
+        let current = self.fundraiser.current_amount;
+        let target = self.fundraiser.amount_to_raise;
+
+        // current/target >= pct/100, rearranged to avoid dividing.
+        let scaled_current = current
+            .checked_mul(PERCENTAGE_SCALER)
+            .ok_or(FundraiserError::InvalidAmount)?;
+
+        for (index, percentage) in MILESTONE_PERCENTAGES.iter().enumerate() {
+            let flag = 1u8 << index;
+
+            if self.fundraiser.milestones_reached & flag != 0 {
+                continue;
+            }
+
+            let threshold = target
+                .checked_mul(*percentage)
+                .ok_or(FundraiserError::InvalidAmount)?;
+
+            if scaled_current >= threshold {
+                self.fundraiser.milestones_reached |= flag;
+
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    percentage: *percentage,
+                    current_amount: current,
+                    amount_to_raise: target,
+                });
+            }
+        }
 
         Ok(())
     }
