@@ -490,3 +490,90 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: milestones
+
+### What it does
+
+A campaign records, permanently, each 25% / 50% / 75% mark its running total
+has crossed, and emits a `MilestoneReached` event the first time it crosses
+each one. Nothing about contributing, refunding or payout changes; the four
+original instructions behave exactly as before. The point is to give a
+front-end something to react to — a progress notification, a social post, an
+unlock — without it having to poll and diff the total itself.
+
+### How it works
+
+**State.** One `milestones_reached: u8` on `Fundraiser`, appended after
+`duration` so every existing field keeps its offset. Bit 0 is 25%, bit 1 is
+50%, bit 2 is 75%. `InitSpace` picks up the extra byte, and `initialize` sets
+it to zero.
+
+**Timing.** At the end of `contribute`, after `current_amount` has been
+updated. Nowhere else: `check_contributions` and `refund` do not touch it.
+
+**The comparison.** `current * 100 >= target * pct`, not
+`current * 100 / target >= pct`. Integer division would round, and a campaign
+sitting a hair under a threshold could land on either side of it depending on
+the exact numbers. The multiplied form has no rounding at all. Both sides use
+`checked_mul`, and `current_amount` and the contributor total now use
+`checked_add` rather than `+=`.
+
+**Skipping.** The loop walks all three thresholds and fires every one that is
+newly crossed, lowest first, rather than only the highest. With the 10%
+per-contributor cap in place a single contribution can never cross two 25%
+marks, so this cannot happen today — but the cap is a constant, and raising
+`MAX_CONTRIBUTION_PERCENTAGE` past 25 would make it immediate. The code does
+not depend on that constant's current value.
+
+**Stickiness.** The bitmask is never cleared. A refund lowers
+`current_amount` but leaves the flags alone.
+
+### What it costs
+
+- **Rent:** one byte on the `Fundraiser` account.
+- **Compute:** three iterations of a bitmask test and at most three
+  `checked_mul`s per contribution, plus one `emit!` per milestone actually
+  crossed. Contribute went from ~26.7k to ~27k CU in the common case where
+  nothing fires.
+- **Accounts:** none. No new account, no new instruction, no change to any
+  existing account list.
+
+### How I would attack it
+
+**Replay a milestone through contribute/refund.** Reach 25%, refund back under
+it, contribute again — if the flags were cleared on refund, the same milestone
+would announce itself twice, and as many more times as someone cared to repeat
+the cycle. This is why the mask is sticky, and
+`milestones-bankrun.ts` is the test for it. Bankrun is needed because the
+contributions require an open window and the refund requires a closed one.
+
+**Trust the event as proof of a balance.** A `MilestoneReached` event says the
+program's running total crossed a threshold at that moment. It does not say
+the vault still holds that much, and after refunds it very likely does not.
+Anything acting on the event — an unlock, a payout, an airdrop — must read
+`current_amount` or the vault balance at the time it acts rather than treating
+the event as a standing fact.
+
+**Off-by-one at the threshold.** `>` instead of `>=` shifts every milestone by
+one unit. Nothing else in the suite would notice: a test that contributes past
+a threshold passes under either. The two boundary tests in `milestones.ts` —
+exactly at 25%, and one unit short — are the only thing that pins it.
+
+**Overflow the comparison.** `current * 100` overflows `u64` above roughly
+1.8e17 raw units. `checked_mul` turns that into an error rather than a wrapped
+comparison that would fire every milestone at once. The same reasoning applies
+to `target * pct`.
+
+**Grief by never crossing.** A campaign that stalls at 24% emits nothing,
+forever. That is correct rather than a bug, but a front-end that waits on the
+event with no timeout will wait a long time.
+
+### What this does not do
+
+It does not act on a milestone. No funds move, nothing unlocks, no separate
+instruction is gated on it. Adding one would mean deciding what a milestone
+means when the total later falls back below it, which the sticky mask
+deliberately leaves open.
