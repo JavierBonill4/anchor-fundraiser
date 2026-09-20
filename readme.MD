@@ -490,3 +490,46 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+
+---
+
+# Custom Feature: Fundraising Milestones
+
+## What it does
+
+This feature adds milestone tracking to the fundraiser at 25%, 50%, and 75% of the fundraising target. Each milestone is stored as a bit in a compact `u8` bitmask on the `Fundraiser` account. When a milestone is reached for the first time, the program emits a `MilestoneReached` event.
+
+## How it works
+
+The `Fundraiser` account now stores a `milestones_fired` field.
+
+The three bits have the following meaning:
+
+- Bit 0 → 25%
+- Bit 1 → 50%
+- Bit 2 → 75%
+
+Milestone checking is performed at the end of the `contribute` instruction, after `current_amount` has been updated.
+
+For each milestone, the program first checks whether its bit has already been set. If it has not been set and the new `current_amount` has reached the corresponding percentage of `amount_to_raise`, the bit is set and a `MilestoneReached` event is emitted.
+
+A single contribution can cross more than one milestone, so each milestone is checked independently.
+
+Milestones are one-way. Once a milestone has been reached, its bit remains set even if later refunds reduce the fundraiser's current amount.
+
+## What it costs
+
+The feature adds one `u8` field to the existing `Fundraiser` account. No additional account or instruction is required.
+
+The `contribute` instruction performs three milestone checks on every contribution. When a new milestone is reached, the program also emits one `MilestoneReached` event.
+
+Milestone threshold calculations use checked arithmetic. If the threshold calculation cannot be represented as a `u64`, the instruction returns `MilestoneCalculationOverflow`.
+
+## How you would attack it
+
+A contributor could attempt to trigger the same milestone repeatedly by making multiple contributions around a milestone boundary. The persistent bitmask prevents this because a milestone that has already been reached is not processed again.
+
+Another attack surface is integer overflow during milestone threshold calculation. The milestone percentage is multiplied using checked arithmetic, and an overflow returns `MilestoneCalculationOverflow` instead of producing an invalid threshold.
+
+The feature is tested with cases below 25%, exactly at 25%, moving beyond 25% without firing the same milestone again, and the complete 25%, 50%, and 75% progression.
