@@ -1,22 +1,25 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
-    associated_token::AssociatedToken, 
-    token::{
-        Mint, 
-        Token, 
-        TokenAccount
-    }
+    associated_token::AssociatedToken,
+    token::{Mint, Token, TokenAccount},
 };
 
-use crate::{
-    state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE
-};
+use crate::{state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE};
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
     pub maker: Signer<'info>,
     pub mint_to_raise: Account<'info, Mint>,
+    #[account(
+        init,
+        payer = maker,
+        seeds = [b"receipt", maker.key().as_ref()],
+        bump,
+        mint::decimals = 9,
+        mint::authority = fundraiser,
+    )]
+    pub receipt_mint: Account<'info, Mint>,
     #[account(
         init,
         payer = maker,
@@ -39,7 +42,6 @@ pub struct Initialize<'info> {
 
 impl<'info> Initialize<'info> {
     pub fn initialize(&mut self, amount: u64, duration: u8, bumps: &InitializeBumps) -> Result<()> {
-
         // Check if the amount to raise meets the minimum amount required.
         //
         // MIN_AMOUNT_TO_RAISE is a count of whole tokens, so it has to be scaled by
@@ -62,9 +64,11 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            receipt_mint: self.receipt_mint.key(),
+            receipt_bump: bumps.receipt_mint,
         });
-        
+
         Ok(())
     }
 }

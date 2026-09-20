@@ -1,0 +1,20 @@
+  // Initialize
+  // it should fail during init where amount < minimum -> reports FundraiserError::InvalidAmount
+  // it should succeed init where amount > minimum -> passes, checks: fundraiser data account exists, validate fundraiser state
+  //
+  // contribute
+  // it shoudl fail when contributor tries sending less than 1 token (fraction)
+  // it should fail if a single person tries to contribute more than allowed contribution per account (Bug: not sybil resistant)
+  // it should fail if fundraising duration has reached
+  // it should fail if contributor don't have enough token
+  // it shoudl suceeed contribution, checks: verify fundraiser amount, contributor amount, vault and conributor token balance
+  //
+  // checker
+  // it should fail if target not met i.e vault.amount < amount to raise
+  // it should send the vault balance to maler if target met
+  //
+  // refund
+  // it should reject if fundraiser not ended
+  // it should reject if target met
+  // it should successfully refund if fundraiser ended and target not met
+  //

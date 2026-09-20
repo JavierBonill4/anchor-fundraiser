@@ -8,7 +8,7 @@ skip-lint = false
 fundraiser = "Eoiuq1dXvHxh6dLx3wh9gj8kSAUpga11krTrbfF5XYsC"
 
 [programs.localnet]
-fundraiser = "7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW"
+fundraiser = "4zvSz9k9RB9WDevWZm369jL4FumaGSoieXiYrsiNA11Y"
 
 [provider]
 cluster = "localnet"

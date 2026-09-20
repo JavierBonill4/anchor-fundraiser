@@ -179,7 +179,15 @@ describe("fundraiser — the window closes (bankrun)", () => {
       [Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
       program.programId
     );
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), maker.publicKey.toBuffer()],
+      program.programId
+    );
+    const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, payer.publicKey);
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+    // mint_to_raise has 6 decimals, receipt_mint has 9 (hardcoded in initialize),
+    // so raw receipt units are raw contributed units times 10^(9 - 6).
+    const RECEIPT_DECIMAL_SCALER = 1_000n;
 
     await send(
       [
@@ -205,12 +213,15 @@ describe("fundraiser — the window closes (bankrun)", () => {
         .accountsPartial({
           contributor: payer.publicKey,
           mintToRaise: mint,
+          receiptMint,
           fundraiser,
           contributorAccount,
           contributorAta,
+          contributorReceiptAta,
           vault,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: anchor.web3.SystemProgram.programId,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         })
         .instruction();
 
@@ -227,6 +238,11 @@ describe("fundraiser — the window closes (bankrun)", () => {
       await tokenBalance(vault),
       BigInt(CONTRIBUTION),
       "the contribution should be in the vault"
+    );
+    assert.strictEqual(
+      await tokenBalance(contributorReceiptAta),
+      BigInt(CONTRIBUTION) * RECEIPT_DECIMAL_SCALER,
+      "the contribution should mint a matching amount of receipt tokens"
     );
 
     // --- day 8: past the deadline, and short of the target ---------------
@@ -248,9 +264,11 @@ describe("fundraiser — the window closes (bankrun)", () => {
           contributor: payer.publicKey,
           maker: maker.publicKey,
           mintToRaise: mint,
+          receiptMint,
           fundraiser,
           contributorAccount,
           contributorAta,
+          contributorReceiptAta,
           vault,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: anchor.web3.SystemProgram.programId,
@@ -263,6 +281,11 @@ describe("fundraiser — the window closes (bankrun)", () => {
       await tokenBalance(contributorAta),
       BigInt(10 * CONTRIBUTION),
       "the contributor should have every token back"
+    );
+    assert.strictEqual(
+      await tokenBalance(contributorReceiptAta),
+      0n,
+      "the refund should burn every receipt token the contribution minted"
     );
   });
 });

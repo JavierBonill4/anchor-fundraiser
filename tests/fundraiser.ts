@@ -3,6 +3,7 @@ import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
+import { assert } from "chai";
 
 describe("fundraiser", () => {
   // Configure the client to use the local cluster.
@@ -25,6 +26,15 @@ describe("fundraiser", () => {
 
   const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
 
+  const receiptMint = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("receipt"), maker.publicKey.toBuffer()], program.programId)[0];
+
+  const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey);
+
+  // mint_to_raise has 6 decimals, receipt_mint has 9 (hardcoded in initialize) —
+  // the program scales 1:1 in whole-token terms, so raw receipt units are raw
+  // contributed units times 10^(9 - 6).
+  const RECEIPT_DECIMAL_SCALER = 1_000;
+
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
     await provider.connection.confirmTransaction({
@@ -34,6 +44,7 @@ describe("fundraiser", () => {
     return signature;
   };
 
+  // This should be before
   it("Test Preparation", async() => {
     const airdrop = await provider.connection.requestAirdrop(maker.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
     console.log("\nAirdropped 1 SOL to maker", airdrop);
@@ -83,10 +94,13 @@ describe("fundraiser", () => {
     .accountsPartial({
       contributor: provider.publicKey,
       fundraiser,
+      receiptMint,
       contributorAccount: contributor,
       contributorAta: contributorATA,
+      contributorReceiptAta,
       vault,
       tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
     })
     .rpc({
       skipPreflight: true,
@@ -99,6 +113,9 @@ describe("fundraiser", () => {
 
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
+
+    const receiptBalance = (await provider.connection.getTokenAccountBalance(contributorReceiptAta)).value.amount;
+    assert.strictEqual(receiptBalance, (1_000_000 * RECEIPT_DECIMAL_SCALER).toString(), "one contribution should mint a matching amount of receipt tokens");
   });
   it("Contribute to Fundraiser", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
@@ -108,10 +125,13 @@ describe("fundraiser", () => {
     .accountsPartial({
       contributor: provider.publicKey,
       fundraiser,
+      receiptMint,
       contributorAccount: contributor,
       contributorAta: contributorATA,
+      contributorReceiptAta,
       vault,
       tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
     })
     .rpc({
       skipPreflight: true,
@@ -122,10 +142,14 @@ describe("fundraiser", () => {
     console.log("Your transaction signature", tx);
     console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
 
+    const receiptBalance = (await provider.connection.getTokenAccountBalance(contributorReceiptAta)).value.amount;
+    assert.strictEqual(receiptBalance, (2_000_000 * RECEIPT_DECIMAL_SCALER).toString(), "two contributions should mint a matching cumulative amount of receipt tokens");
+
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
   });
 
+  // this fails because after this contributor amount would be more than 10% of amount to raise
   it("Contribute to Fundraiser - Robustness Test", async () => {
     try {
       const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
@@ -154,6 +178,7 @@ describe("fundraiser", () => {
     }
   });
 
+  // fundraising duration not passed
   it("Check contributions - Robustness Test", async () => {
     try {
       const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
@@ -182,7 +207,7 @@ describe("fundraiser", () => {
       console.log(error.msg);
     }
   });
-  
+
   // A refund is only legal once the window has closed, so a seven day fundraiser
   // must refuse one on the day it opens. The successful refund is covered in
   // tests/time-window-bankrun.ts, which can move the clock past the deadline.

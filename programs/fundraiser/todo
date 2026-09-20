@@ -1,0 +1,6 @@
+More robust program would use non-transferable and permissioned burn
+-> Instead of using non-transferrable extension
+-> create transfer hook that prevents transfers when fundraising is on
+-> once fundraising settled, clear the transfer hook and permissioned burn making token free to transact
+-> Also revoke mint authority to prevent illegal minting in future.
+-> Even though contribute path closes mint, upgrade authority of the program can add new instruction that can create new ways to mint and pull the rug
