@@ -1,9 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
-    associated_token::AssociatedToken, 
+    associated_token::AssociatedToken,
     token::{
-        Mint, 
-        Token, 
+        Mint,
+        Token,
         TokenAccount
     }
 };
@@ -62,9 +62,10 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            milestone: 0,
         });
-        
+
         Ok(())
     }
 }

@@ -6,10 +6,12 @@ mod state;
 mod instructions;
 mod error;
 mod constants;
+mod event;
 
 use instructions::*;
 use error::*;
 pub use constants::*;
+pub use event::*;
 
 #[program]
 pub mod fundraiser {

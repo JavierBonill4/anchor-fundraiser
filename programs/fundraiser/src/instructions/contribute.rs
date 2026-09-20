@@ -1,21 +1,21 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
+    Mint,
+    transfer,
+    Token,
+    TokenAccount,
     Transfer
 };
 
 use crate::{
-    state::{
-        Contributor, 
+    ANCHOR_DISCRIMINATOR, FundraiserError, MAX_CONTRIBUTION_PERCENTAGE, MILESTONE_25, MILESTONE_50, MILESTONE_75, PERCENTAGE_SCALER, SECONDS_TO_DAYS, state::{
+        Contributor,
         Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    }
 };
+
+use crate::event::MilestoneReached;
+
 
 #[derive(Accounts)]
 pub struct Contribute<'info> {
@@ -68,7 +68,7 @@ impl<'info> Contribute<'info> {
 
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER,
             FundraiserError::ContributionTooBig
         );
 
@@ -103,6 +103,26 @@ impl<'info> Contribute<'info> {
 
         // Update the fundraiser and contributor accounts with the new amounts
         self.fundraiser.current_amount += amount;
+
+        let target = self.fundraiser.amount_to_raise as u128;
+        let current = self.fundraiser.current_amount as u128;
+
+        let milestones = [
+            (MILESTONE_25, 25, (target * 25)/100),
+            (MILESTONE_50, 50, (target * 50)/ 100),
+            (MILESTONE_75, 75, (target * 75)/ 100)
+        ];
+
+        for (mask, pct, threshold) in milestones {
+            if current >= threshold && (self.fundraiser.milestone & mask) == 0{
+                self.fundraiser.milestone |= mask;
+                emit!(MilestoneReached{
+                    fundraiser: self.fundraiser.key(),
+                    milestone_pct: pct,
+                    current_amount: current,
+                });
+            }
+        }
 
         self.contributor_account.amount += amount;
 
