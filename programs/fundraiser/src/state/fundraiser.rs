@@ -10,4 +10,11 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub milestones_fired: u8, //bit 0=25%, bit 1 = 50%, bit 2 =75%
+}
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub quarter: u8,
+    pub current_amount: u64,
 }

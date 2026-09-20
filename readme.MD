@@ -490,3 +490,73 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+## My feature: Milestones (25% / 50% / 75%)
+
+### What it does
+The fundraiser records when it first reaches 25%, 50% and 75% of its target.
+At the end of every `contribute`, the program checks which of those marks the
+running total has passed and fires any that have not fired yet: it sets a bit
+in `milestones_fired` on the Fundraiser account and emits a `MilestoneReached`
+event. A contribution that jumps past a mark still fires it, and each mark fires
+at most once. Milestones never block a contribution and never move funds; they
+are an on-chain signal of momentum that backers and front ends can rely on.
+
+### How it works
+- **State:** `milestones_fired: u8` appended to the end of `Fundraiser`
+  (bit 0 = 25%, bit 1 = 50%, bit 2 = 75%), set to `0` in `initialize`.
+- **Where:** inline at the end of `contribute`, after the transfer and the
+  counter updates, because `contribute` is the only instruction that moves the
+  total upward.
+- **Math:** `quarters = current_amount * 4 / amount_to_raise` (multiply before
+  divide, `checked_mul`). The loop runs over `0..quarters.min(3)`, so it is
+  "which marks are now satisfied", not "did we land exactly on one". 100% is
+  left to `check_contributions`.
+- **Once only:** each mark checks its bit before firing and sets it before
+  emitting, so repeat contributions never re-fire a mark.
+- **Event:** `MilestoneReached { fundraiser, quarter, current_amount }`.
+- **Errors:** new `ArithmeticOverflow`. The two existing counter updates in
+  `contribute` were also moved from bare `+=` to `checked_add`.
+- **No new accounts** and no change to any instruction's account list.
+
+### What it costs
+- **Rent:** +1 byte on each Fundraiser, about 6,960 lamports, paid once by the
+  maker.
+- **Accounts:** none added.
+- **Compute:** `contribute` measured at ~28.3k CU. The milestone check itself is
+  a multiply, a divide and at most three bit tests. A firing mark adds one
+  event log, a 49-byte payload (8-byte discriminator + 32 + 1 + 8).
+
+### How I would attack it
+1. **Stale flags after refunds.** Milestones are one-way by design. If the
+   campaign fails, refunds lower `current_amount` but the bits stay set, so the
+   flags can claim more progress than the vault holds. Front ends should read
+   the vault for the live percentage and treat the flags as "reached at some
+   point".
+2. **Fake momentum by the maker.** The 10% cap is per wallet, not per person.
+   A maker can fund several wallets and push the campaign to 75% themselves to
+   attract real backers. If the target is missed they refund their own wallets
+   at no cost, so milestones measure money in the vault, not independent
+   support.
+3. **Tokens sent straight to the vault.** A plain SPL transfer into the vault
+   bypasses `contribute`, so `current_amount` and the milestones do not move,
+   while `check_contributions` (which reads the vault balance) can still
+   succeed. The flags can under-report as well as over-report.
+4. **Upgrading a live deployment.** Appending a byte changes the account size.
+   Fundraisers created before an upgrade are one byte short and would fail to
+   deserialize under the new layout, so a real upgrade needs a realloc or
+   migration step. On a fresh deployment this does not apply.
+5. **Arithmetic edges.** Division by zero cannot happen, because `initialize`
+   requires a target above 3 whole tokens. `current_amount * 4` could only
+   overflow above ~4.6e18 raw units, where `checked_mul` returns
+   `ArithmeticOverflow` instead of wrapping.
+
+### Tests (`tests/milestones.ts`)
+- Happy path: 30% sets `0b001`, 50% sets `0b011`.
+- Boundary: `7_499_999` raw (just under 25%) fires nothing; exactly
+  `7_500_000` fires 25%.
+- Abuse: a single wallet capped at 10% is rejected with
+  `MaximumContributionsReached` and cannot fire a milestone alone.
+- Idempotent: a later contribution at 40% neither re-fires nor clears 25%.
+- Cap: reaching 100% sets `0b111` and nothing more.
+- With the milestone loop commented out, 4 of these fail.
