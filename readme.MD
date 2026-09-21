@@ -490,3 +490,91 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: Quarter milestones at 25% / 50% / 75% (Option A)
+
+### What it does
+
+A campaign at 60% looks very different to a prospective backer than one at 10%,
+and previously nothing on-chain marked the difference. Now each fundraiser tracks
+three one-way quarter marks. The first contribution that pushes `current_amount`
+at or past 25%, 50% or 75% of `amount_to_raise` sets a bit and emits a
+`MilestoneReached { fundraiser, quarter (1|2|3), amount }` event a front end can
+subscribe to instead of polling the vault balance.
+
+Who benefits: backers and front ends that want a cheap, unforgeable progress
+signal. A dishonest user would try to fire a milestone twice, fire one without
+qualifying (crafted transaction / wrong account), or get a refund to un-fire one
+and replay it.
+
+### How it works
+
+- State: `milestones_fired: u8` **appended** to `Fundraiser` (bit 0 = 25%,
+  bit 1 = 50%, bit 2 = 75%). Appended at the end so Borsh layout only gains
+  trailing bytes. Initialized to `0` in `initialize`.
+- Trigger: **inline** at the end of `contribute`, after `current_amount` is
+  updated — the only instruction that moves the total upward. Computed as
+  `quarters = current_amount * 4 / target` (multiply-before-divide, no floats),
+  then `for i in 0..quarters.min(3)` sets any unset bit and emits the event.
+  The loop shape matters: a contribution that leaps two marks fires both, and
+  the bit check makes each fire exactly once.
+- Accounts: no new accounts, no new instruction, no PDA signing. The vault,
+  maker and contributor flows are untouched.
+- Money math: no bare `+`, `-`, `*` on token amounts. `max_per_contributor`,
+  the contributor total, `current_amount` and the `* 4` use `checked_mul` /
+  `checked_add` / `checked_sub` with a new `Overflow` error. `refund`'s bare
+  `-=` was fixed the same way. `amount_to_raise > 0` is guaranteed by
+  `initialize`'s minimum, so the `/ target` cannot trap.
+
+### What it costs
+
+- Rent: +1 byte on `Fundraiser` (98 → 99 bytes with discriminator). At current
+  rent that is `0.00115316 - 0.00114808 = 0.00000508 SOL` (~5,080 lamports),
+  paid once by the maker at `initialize`.
+- Accounts/compute: zero new accounts. The milestone block is one
+  `checked_mul`, one division and up to three bit-test + emit iterations —
+  a few thousand compute units extra in the worst case (all three fire at
+  once), still far below the 200k budget. Baseline `contribute` is ~32k CU;
+  milestones keep it in the same order of magnitude. Events are logs, not
+  state: cheap in the transaction, gone unless someone indexes them — hence
+  emitted *as well as* the on-chain bits, never instead of them.
+
+### How you would attack it
+
+- **Refund does not retract.** `refund` lowers `current_amount` but never
+  clears a bit, by design. After refunds the flags can claim a mark the vault
+  no longer justifies (e.g. flags say 50% but the vault holds 10%). A mark
+  that flickers is worse than one that is generous, but a front end must read
+  the vault balance for a live percentage and treat the flags as
+  "has-ever-reached", not "currently-at".
+- **No exclusive reward, no double-claim value.** Firing a milestone pays
+  nothing and grants no authority, so there is nothing to steal by re-firing —
+  and re-firing is impossible anyway (bit check). The abuse case is covered by
+  idempotency tests, not by an error.
+- **Sybil / cap games.** The 10%-per-contributor cap means one keypair cannot
+  push a campaign over a mark alone; an attacker needing a milestone would
+  need several funded identities — the same cost as legitimately funding it.
+- **Overflow grief.** A pathological target near `u64::MAX` makes the 10%
+  computation overflow; it now fails cleanly with `Overflow` instead of
+  panicking. No funds move in that path (checks run before the transfer).
+- **Event spoofing.** Events are not consensus: anyone can emit a
+  look-alike log from another program. Consumers must filter by this program
+  id and verify the `fundraiser` account, not trust log text alone.
+
+### Testing
+
+`tests/milestones.ts` (4 tests, all assert on-chain state):
+
+1. Happy path — sequential 4M contributions to a 40M target fire 25% at 12M
+   and 50% at 20M (`milestonesFired` 0 → 1 → 3).
+2. Boundary — 9,999,999 (one unit below 25%) fires nothing; exactly 10,000,000
+   fires bit 0. Two sibling campaigns because the 1-token minimum forbids a
+   1-unit top-up step.
+3. Abuse/idempotency — extra contributions inside the same quarter succeed and
+   grow the total but leave the flags at `0b001`.
+4. Checked math — a `u64::MAX` target rejects `contribute` with `Overflow`.
+
+Delete the milestone block in `contribute.rs` and tests 1–3 go red; restore
+bare `*`/`+` and test 4 goes red (panics instead of `Overflow`).

@@ -12,6 +12,7 @@ use crate::{
         Contributor, 
         Fundraiser
     }, 
+    FundraiserError,
     SECONDS_TO_DAYS
 };
 
@@ -93,8 +94,16 @@ impl<'info> Refund<'info> {
         // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        // Update the fundraiser state by reducing the amount contributed.
+        // Checked so a corrupted `current_amount` fails instead of wrapping.
+        // Note: `milestones_fired` is deliberately left untouched — milestones
+        // are one-way (see README). A refund can drop the vault below a mark
+        // the flags still claim.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(FundraiserError::Overflow)?;
 
         Ok(())
     }
