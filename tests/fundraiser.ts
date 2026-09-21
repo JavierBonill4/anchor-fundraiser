@@ -1,213 +1,186 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
-import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
-import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
+import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, getAccount } from "@solana/spl-token";
+import { createMint, createAssociatedTokenAccount, mintTo } from "spl-token-bankrun";
+import { startAnchor, BankrunProvider } from "anchor-bankrun";
+import { Clock } from "solana-bankrun";
+import assert from "assert";
+
 
 describe("fundraiser", () => {
-  // Configure the client to use the local cluster.
-  const provider = anchor.AnchorProvider.env()
-  anchor.setProvider(provider);
-
-  const program = anchor.workspace.Fundraiser as Program<Fundraiser>;
+  let provider: BankrunProvider;
+  let program: Program<Fundraiser>;
+  let context: any;
 
   const maker = anchor.web3.Keypair.generate();
-
+  const contributorKeypair = anchor.web3.Keypair.generate();
+  
   let mint: anchor.web3.PublicKey;
-
   let contributorATA: anchor.web3.PublicKey;
-
   let makerATA: anchor.web3.PublicKey;
 
-  const wallet = provider.wallet as NodeWallet;
+  let fundraiser: anchor.web3.PublicKey;
+  let contributorAccount: anchor.web3.PublicKey;
+  let receiptMint: anchor.web3.PublicKey;
+  let contributorReceiptAta: anchor.web3.PublicKey;
+  let vault: anchor.web3.PublicKey;
 
-  const fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
+  // We use a single before() hook to handle all Bankrun asynchronous setup
+  before(async () => {
+    context = await startAnchor("", [], []);
+    provider = new BankrunProvider(context);
+    anchor.setProvider(provider);
+    
+    // Re-bind the program to use the Bankrun provider instead of the default local validator
+    const workspaceProgram = anchor.workspace.Fundraiser as Program<Fundraiser>;
+    program = new Program(workspaceProgram.idl, provider) as Program<Fundraiser>;
 
-  const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+    // Derive PDAs
+    fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
+    contributorAccount = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), contributorKeypair.publicKey.toBuffer()], program.programId)[0];
+    receiptMint = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("receipt"), fundraiser.toBuffer(), contributorKeypair.publicKey.toBuffer()], program.programId)[0];
+    contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, contributorKeypair.publicKey);
 
-  const confirm = async (signature: string): Promise<string> => {
-    const block = await provider.connection.getLatestBlockhash();
-    await provider.connection.confirmTransaction({
-      signature,
-      ...block,
+    // Execute Test Preparation logic securely inside the hook
+    const systemProgram = anchor.web3.SystemProgram.programId;
+    
+    context.setAccount(maker.publicKey, {
+      lamports: 10 * anchor.web3.LAMPORTS_PER_SOL,
+      data: Buffer.alloc(0),
+      owner: systemProgram,
+      executable: false,
     });
-    return signature;
-  };
+    
+    context.setAccount(contributorKeypair.publicKey, {
+      lamports: 10 * anchor.web3.LAMPORTS_PER_SOL,
+      data: Buffer.alloc(0),
+      owner: systemProgram,
+      executable: false,
+    });
 
-  it("Test Preparation", async() => {
-    const airdrop = await provider.connection.requestAirdrop(maker.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
-    console.log("\nAirdropped 1 SOL to maker", airdrop);
+    // Use banksClient to create mints and accounts exclusively in Bankrun
+    mint = await createMint(context.banksClient, maker, maker.publicKey, maker.publicKey, 6);
+    vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-    mint = await createMint(provider.connection, wallet.payer, provider.publicKey, provider.publicKey, 6);
-    console.log("Mint created", mint.toBase58());
+    contributorATA = await createAssociatedTokenAccount(context.banksClient, maker, mint, contributorKeypair.publicKey);
+    makerATA = await createAssociatedTokenAccount(context.banksClient, maker, mint, maker.publicKey);
 
-    contributorATA = (await getOrCreateAssociatedTokenAccount(provider.connection, wallet.payer, mint, wallet.publicKey)).address;
-
-    makerATA = (await getOrCreateAssociatedTokenAccount(provider.connection, wallet.payer, mint, maker.publicKey)).address;
-
-    const mintTx = await mintTo(provider.connection, wallet.payer, mint, contributorATA, provider.publicKey, 1_000_000_0);
-    console.log("Minted 10 tokens to contributor", mintTx);
-  })
-
-  it("Initialize Fundaraiser", async () => {
-    // Add your test here.
-    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
-
-    const tx = await program
-    .methods
-    .initialize(new anchor.BN(30000000), 7)   // days; must be at least 1
-    .accountsPartial({
-      maker: maker.publicKey,
-      fundraiser,
-      mintToRaise: mint,
-      vault,
-      systemProgram: anchor.web3.SystemProgram.programId,
-      tokenProgram: TOKEN_PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-    })
-    .signers([maker])
-    .rpc({
-      skipPreflight: true,
-    })
-    .then(confirm);
-
-    console.log("\nInitialized fundraiser Account");
-    console.log("Your transaction signature", tx);
+    await mintTo(context.banksClient, maker, mint, contributorATA, maker, 1_000_000_0);
   });
 
-  it("Contribute to Fundraiser", async () => {
-    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
-
-    const tx = await program.methods
-    .contribute(new anchor.BN(1000000))
-    .accountsPartial({
-      contributor: provider.publicKey,
-      fundraiser,
-      contributorAccount: contributor,
-      contributorAta: contributorATA,
-      vault,
-      tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .rpc({
-      skipPreflight: true,
-    })
-    .then(confirm);
-
-    console.log("\nContributed to fundraiser", tx);
-    console.log("Your transaction signature", tx);
-    console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-
-    let contributorAccount = await program.account.contributor.fetch(contributor);
-    console.log("Contributor balance", contributorAccount.amount.toString());
-  });
-  it("Contribute to Fundraiser", async () => {
-    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
-
-    const tx = await program.methods
-    .contribute(new anchor.BN(1000000))
-    .accountsPartial({
-      contributor: provider.publicKey,
-      fundraiser,
-      contributorAccount: contributor,
-      contributorAta: contributorATA,
-      vault,
-      tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .rpc({
-      skipPreflight: true,
-    })
-    .then(confirm);
-
-    console.log("\nContributed to fundraiser", tx);
-    console.log("Your transaction signature", tx);
-    console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-
-    let contributorAccount = await program.account.contributor.fetch(contributor);
-    console.log("Contributor balance", contributorAccount.amount.toString());
-  });
-
-  it("Contribute to Fundraiser - Robustness Test", async () => {
-    try {
-      const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
-
-      const tx = await program.methods
-      .contribute(new anchor.BN(2000000))
-      .accountsPartial({
-        contributor: provider.publicKey,
-        fundraiser,
-        contributorAccount: contributor,
-        contributorAta: contributorATA,
-        vault,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      })
-      .rpc({
-        skipPreflight: true,
-      })
-      .then(confirm);
-
-      console.log("\nContributed to fundraiser", tx);
-      console.log("Your transaction signature", tx);
-      console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-    } catch (error) {
-      console.log("\nError contributing to fundraiser");
-      console.log(error.msg);
-    }
-  });
-
-  it("Check contributions - Robustness Test", async () => {
-    try {
-      const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
-
-      const tx = await program.methods
-      .checkContributions()
+  it("Initialize Fundraiser", async () => {
+    await program.methods
+      .initialize(new anchor.BN(30000000), 7)
       .accountsPartial({
         maker: maker.publicKey,
-        mintToRaise: mint,
         fundraiser,
-        makerAta: makerATA,
+        mintToRaise: mint,
         vault,
+        systemProgram: anchor.web3.SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
       .signers([maker])
-      .rpc({
-        skipPreflight: true,
-      })
-      .then(confirm);
-
-      console.log("\nChecked contributions");
-      console.log("Your transaction signature", tx);
-      console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-    } catch (error) {
-      console.log("\nError checking contributions");
-      console.log(error.msg);
-    }
+      .rpc();
   });
-  
-  // A refund is only legal once the window has closed, so a seven day fundraiser
-  // must refuse one on the day it opens. The successful refund is covered in
-  // tests/time-window-bankrun.ts, which can move the clock past the deadline.
-  it("Refund Contributions - refused while the window is open", async () => {
-    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-    try {
-      await program.methods
-      .refund()
+  it("Contribute & Verify NFT Minting (Happy Path)", async () => {
+    await program.methods
+      .contribute(new anchor.BN(1000000))
       .accountsPartial({
-        contributor: provider.publicKey,
-        maker: maker.publicKey,
+        contributor: contributorKeypair.publicKey,
         mintToRaise: mint,
         fundraiser,
-        contributorAccount: contributor,
+        contributorAccount,
         contributorAta: contributorATA,
         vault,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
+        // NEW: Pass the receipt accounts
+        receiptMint,
+        contributorReceiptAta,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
+      .signers([contributorKeypair])
       .rpc();
-      throw new Error("the refund should have been refused");
-    } catch (error) {
-      console.log("\nRefund refused while the fundraiser is still running");
-      console.log(error.error?.errorCode?.code ?? error.message);
+
+    // Verify the contributor state
+    let state = await program.account.contributor.fetch(contributorAccount);
+    assert.strictEqual(state.amount.toNumber(), 1000000);
+
+      // Verify the NFT was minted
+    const receiptAccount = await getAccount(provider.connection, contributorReceiptAta);
+    assert.strictEqual(Number(receiptAccount.amount), 1, "Contributor should have exactly 1 NFT receipt");
+  }); 
+
+  it("Refund Refused (Abuse Case: Time Window Still Open)", async () => {
+    try {
+      await program.methods
+        .refund()
+        .accountsPartial({
+          contributor: contributorKeypair.publicKey,
+          maker: maker.publicKey,
+          mintToRaise: mint,
+          fundraiser,
+          contributorAccount,
+          contributorAta: contributorATA,
+          vault,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+          receiptMint,
+          contributorReceiptAta,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        })
+        .signers([contributorKeypair])
+        .rpc();
+      
+      assert.fail("Expected the refund to be rejected");
+    } catch (err: any) {
+      // Assert the specific custom error code from Anchor, not just a generic failure
+      assert.strictEqual(err.error.errorCode.code, "FundraiserNotEnded");
+    }
+  });
+
+  it("Time Travel & Refund (Boundary)", async () => {
+    // 1. Manually advance the Bankrun clock by 15 days
+    const clock = await context.banksClient.getClock();
+    context.setClock(new Clock(
+      clock.slot,
+      clock.epochStartTimestamp,
+      clock.epoch,
+      clock.leaderScheduleEpoch,
+      clock.unixTimestamp + BigInt(15 * 86_400),
+    ));
+
+    // 2. Execute the refund now that the deadline has passed
+    await program.methods
+      .refund()
+      .accountsPartial({
+        contributor: contributorKeypair.publicKey,
+        maker: maker.publicKey,
+        mintToRaise: mint,
+        fundraiser,
+        contributorAccount,
+        contributorAta: contributorATA,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        receiptMint,
+        contributorReceiptAta,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      })
+      .signers([contributorKeypair])
+      .rpc();
+
+    // 3. Verify the NFT was burned as part of the refund trap
+    try {
+      const receiptAccount = await getAccount(provider.connection, contributorReceiptAta);
+      assert.strictEqual(Number(receiptAccount.amount), 0, "NFT receipt should be burned after refund");
+    } catch (err: any) {
+      // If your program closed the token account completely after burning the token,
+      // getAccount will throw a TokenAccountNotFoundError. Both mean the NFT is successfully gone!
+      assert.strictEqual(err.name, "TokenAccountNotFoundError");
     }
   });
 });
