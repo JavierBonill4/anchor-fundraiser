@@ -490,3 +490,37 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+
+## Milestone Signals
+
+This feature adds on-chain milestone signals when a fundraiser reaches 25%, 50%, and 75% of its target. Each milestone is recorded once and can be used by a front end or other client to react to meaningful campaign progress without continuously polling the vault balance. The milestone state belongs to the fundraiser because it applies to the whole campaign. A dishonest user might try to trigger the same milestone repeatedly with multiple contributions or manipulate contributions around an exact threshold, so the implementation records each milestone after it fires and the tests verify the boundary and repeat-trigger behavior.
+### What it does
+
+The fundraiser records milestone signals when contributions reach 25%, 50%, and 75% of the fundraising target. Each milestone can only be recorded once.
+
+### How it works
+
+The `Fundraiser` account has a `milestones_fired` field. Each bit represents one milestone. After a successful contribution, the program calculates how many quarters of the fundraising target have been reached. If a milestone has been reached and its bit is not already set, the program sets the bit and emits a `MilestoneReached` event.
+
+The contribution calculations use checked arithmetic so token amount calculations return an `Overflow` error instead of overflowing.
+
+### Cost
+
+The fundraiser account stores one additional `u8`, so the account requires one additional byte of data. No new PDA or token account is created for the feature.
+
+The milestone check runs at the end of each successful contribution and adds a small amount of arithmetic and bit checking. Local tests show the contribution instruction using roughly 28,000 compute units.
+
+### How I would attack it
+
+I would try contributions just below and exactly at a milestone boundary, repeated contributions after a milestone has already fired, and contributions large enough to test arithmetic limits. The milestone bits are one-way, so once a milestone is recorded it is not cleared if funds are later refunded. A client that needs the current live percentage should read the fundraiser or vault balance rather than treating a past milestone event as the current balance.
+
+### Tests
+
+Three milestone tests cover:
+
+- one raw unit below 25%, where no milestone is recorded
+- exactly 25%, where the first milestone is recorded
+- a later contribution after 25%, where the first milestone remains recorded only once
+
+The full test suite passes with 14 tests.
