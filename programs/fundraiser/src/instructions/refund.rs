@@ -1,10 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{burn, Burn, Mint, Token, TokenAccount, Transfer, transfer}		// added burns
 };
 
 use crate::{
@@ -49,7 +46,25 @@ pub struct Refund<'info> {
     pub vault: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+
+	// -- Accounts for Burning the NFT --
+    #[account(
+        mut,
+        seeds = [b"receipt", fundraiser.key().as_ref(), contributor.key().as_ref()],
+        bump,
+    )]
+    pub receipt_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        associated_token::mint = receipt_mint,
+        associated_token::authority = contributor
+    )]
+    pub contributor_receipt_ata: Account<'info, TokenAccount>,
+
+    pub associated_token_program: Program<'info, AssociatedToken>,
 }
+
 
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
@@ -95,6 +110,17 @@ impl<'info> Refund<'info> {
 
         // Update the fundraiser state by reducing the amount contributed
         self.fundraiser.current_amount -= self.contributor_account.amount;
+
+        // -- NEW LOGIC: Burn the NFT receipt --
+        let burn_accounts = Burn {
+            mint: self.receipt_mint.to_account_info(),
+            from: self.contributor_receipt_ata.to_account_info(),
+            authority: self.contributor.to_account_info(),
+        };
+        
+        let burn_cpi_ctx = CpiContext::new(self.token_program.key(), burn_accounts);
+        
+        burn(burn_cpi_ctx, 1)?;
 
         Ok(())
     }

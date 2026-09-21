@@ -1,10 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{
+        mint_to, MintTo, Mint, Token, TokenAccount, Transfer, transfer
+    },
 };
 
 use crate::{
@@ -51,6 +50,27 @@ pub struct Contribute<'info> {
     pub vault: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+
+    // -- NEW ACCOUNTS FOR THE NFT RECEIPT --
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        seeds = [b"receipt", fundraiser.key().as_ref(), contributor.key().as_ref()],
+        bump,
+        mint::decimals = 0,
+        mint::authority = fundraiser // PDA keeps authority to beat the refund trap
+    )]
+    pub receipt_mint: Account<'info, Mint>,
+
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        associated_token::mint = receipt_mint,
+        associated_token::authority = contributor
+    )]
+    pub contributor_receipt_ata: Account<'info, TokenAccount>,
+
+    pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
 impl<'info> Contribute<'info> {
@@ -101,9 +121,39 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
+// Update the fundraiser total
         self.fundraiser.current_amount += amount;
 
+        // -- NEW LOGIC: Mint the receipt if this is their first contribution --
+        // (We check this BEFORE adding the current amount to their account!)
+        if self.contributor_account.amount == 0 {
+            let maker_key = self.fundraiser.maker.key();
+            let bump = self.fundraiser.bump;
+            
+            // The Fundraiser PDA is the mint authority, so it must sign the CPI
+            let signer_seeds: &[&[&[u8]]] = &[&[
+                b"fundraiser",
+                maker_key.as_ref(),
+                &[bump],
+            ]];
+
+            let mint_accounts = MintTo {
+                mint: self.receipt_mint.to_account_info(),
+                to: self.contributor_receipt_ata.to_account_info(),
+                authority: self.fundraiser.to_account_info(),
+            };
+            
+            let cpi_ctx = CpiContext::new_with_signer(
+                self.token_program.key(), 	// I used the wrong self.token_program.to_account_info()
+                mint_accounts, 
+                signer_seeds
+            );
+
+            // Mint exactly 1 NFT
+            mint_to(cpi_ctx, 1)?;
+        }
+
+        // Now we can safely update their contributor account balance
         self.contributor_account.amount += amount;
 
         Ok(())

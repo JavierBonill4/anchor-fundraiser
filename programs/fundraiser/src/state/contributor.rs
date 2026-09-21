@@ -5,3 +5,4 @@ use anchor_lang::prelude::*;
 pub struct Contributor {
     pub amount: u64,
 }
+
