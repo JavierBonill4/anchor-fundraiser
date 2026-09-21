@@ -555,7 +555,7 @@ it and silently misread accounts created before the change.
 
 | | |
 |---|---|
-| `claim_reward` compute | **45,442 CU** for the first claimer, who also creates the mint and their ATA; later claimers create only their own ATA |
+| `claim_reward` compute | **roughly 42k–62k CU** (five runs: 42,442 / 45,442 / 48,473 / 52,942 / 61,942). The first claimer also creates the campaign's reward mint and their own ATA; that account-creation work is what moves, and it is why the figure is a range rather than a number. Later claimers create only their own ATA. For scale, `contribute` is ~25k and `initialize` ~34k |
 | Reward mint rent | **0.00106 SOL**, once per campaign, paid by the first claimer |
 | Reward ATA rent | **0.00149 SOL** per claimer, paid by that claimer |
 | `Contributor` rent | one byte larger — the `bool`. Rounds to nothing in practice |
