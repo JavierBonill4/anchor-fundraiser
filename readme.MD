@@ -1,4 +1,10 @@
-# Token Fundraiser
+# Token Fundraiser + soulbound contributor badges
+
+Anchor 1.1.2 example: a maker opens an SPL-token campaign, wallets donate (hard 10% cap per wallet), the maker claims if the target is hit, and each donor later receives a **soulbound Token-2022 NFT** (funding credential). An off-chain observer pins Metaplex JSON and cranks the mint.
+
+This started from the classic “vault + contributor PDA + refund” school program. Claim used to **close** the fundraiser. That is gone: the campaign must stay on-chain until every badge is minted.
+
+---
 
 ## Prerequisites
 
@@ -6,7 +12,7 @@
 | --- | --- |
 | Anchor | 1.1.2 (`avm install 1.1.2 && avm use 1.1.2`) |
 | Solana CLI | 3.1 or newer |
-| Node | 20 or newer, with `yarn` |
+| Node | 20+, with `yarn` |
 
 ```bash
 yarn install
@@ -15,478 +21,204 @@ anchor keys sync   # first time only — see below
 anchor test
 ```
 
-The repo declares a program id it does not ship the keypair for, so your first
-`anchor build` generates a different one and `anchor test` fails with
-`DeclaredProgramIdMismatch`. `anchor keys sync` rewrites `declare_id!` and
-`Anchor.toml` to match the keypair you just generated. Run it once, then rebuild.
-
-This example demonstrates how to create a fundraising for SPL Tokens.
-
-In this example, a user will be able to create a fundraiser account, where he will be specify the mint he wants to collect and the fundraising target.
+The repo declares a program id it may not ship the keypair for. First `anchor build` can generate a different one and tests fail with `DeclaredProgramIdMismatch`. `anchor keys sync` rewrites `declare_id!` and `Anchor.toml` to match. Run it once, then rebuild.
 
 ---
 
-## Let's walk through the architecture:
+## How it works (simple)
 
-A fundraising account consists of:
+1. **Maker** calls `initialize` with a raise mint, a target (raw units, must be **> 3 whole tokens**), a duration in **days**, and a **minter** pubkey. The program creates a PDA campaign and an SPL vault ATA owned by that PDA.
+2. **Donors** call `contribute`. Each wallet has a contributor PDA. First gift gets a **position** (`1, 2, …`). Later gifts from the same wallet append a `{timestamp, amount}` to `collaborations` (max 16). Per wallet, total given cannot exceed **10% of the target** — so hitting a 30-token goal needs **at least 10 wallets**.
+3. If the vault reaches the target **before** the window ends, the maker calls `check_contributions`. Tokens move to the maker. The campaign is marked `is_claimed` and **stays open** (we still need it as mint authority for badges).
+4. An **observer** (Node script) sees `CampaignClaimed`, loads each contributor, optionally pins JSON to Pinata, and calls `airdrop_badge` as the stored `minter`. That creates a Token-2022 mint with **NonTransferable** (cannot send the NFT) + **MetadataPointer** + on-chain name/symbol/uri, then mints **1** token to the donor’s Token-2022 ATA.
+5. When `badges_minted == contributor_count` and the vault is empty, the maker calls `close_fundraiser` and gets the rent back.
+6. If the window ends **short** of the target, donors `refund`. No NFTs on that path.
 
-```rust
-#[account]
-#[derive(InitSpace)]
-pub struct Fundraiser {
-    pub maker: Pubkey,
-    pub mint_to_raise: Pubkey,
-    pub amount_to_raise: u64,
-    pub current_amount: u64,
-    pub time_started: i64,
-    pub duration: u8,
-    pub bump: u8,
-}
-```
-
-### In this state account, we will store:
-
-- maker: the person who is starting the fundraising
-
-- mint_to_raise: the mint that the maker wants to receive
-
-- amount_to_raise: the target amount that the maker is trying to raise
-
-- current_amount: the total amount currently donated
-
-- time_started: the time when the account was created
-
-- duration: the timeframe to collect all the contributions (in days) 
-
-- bump: since our Fundraiser account will be a PDA (Program Derived Address), we will store the bump of the account
-
-We use InitSpace derive macro to implement the space triat that will calculate the amount of space that our account will use on-chain (without taking the anchor discriminator into consideration)
+On-chain metadata is only `name`, `symbol`, `uri`. Image, attributes (contributor, beneficiary, amount, position) and the collaborations array live in **JSON at `uri`** (IPFS / Pinata). That JSON can grow without another program upgrade.
 
 ---
 
-### The user will be able to create new Fundraiser accounts. For that, we create the following context:
+## Architecture
 
-```rust
-#[derive(Accounts)]
-pub struct Initialize<'info> {
-    #[account(mut)]
-    pub maker: Signer<'info>,
-    pub mint_to_raise: Account<'info, Mint>,
-    #[account(
-        init,
-        payer = maker,
-        seeds = [b"fundraiser", maker.key().as_ref()],
-        bump,
-        space = ANCHOR_DISCRIMINATOR + Fundraiser::INIT_SPACE,
-    )]
-    pub fundraiser: Account<'info, Fundraiser>,
-    #[account(
-        init,
-        payer = maker,
-        associated_token::mint = mint_to_raise,
-        associated_token::authority = fundraiser,
-    )]
-    pub vault: Account<'info, TokenAccount>,
-    pub system_program: Program<'info, System>,
-    pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-}
+```mermaid
+flowchart LR
+  Maker -->|initialize| Campaign
+  Donor -->|contribute SPL| Vault
+  Donor -->|writes| ContribPDA
+  Maker -->|check_contributions| MakerATA
+  Observer -->|airdrop_badge| BadgeMint
+  BadgeMint -->|1 soulbound NFT| DonorATA
 ```
 
-Let´s have a closer look at the accounts that we are passing in this context:
+### Accounts / PDAs
 
-- maker: will be the person starting the fundraising. He will be a signer of the transaction, and we mark his account as mutable as we will be deducting lamports from this account
+| Account | Seeds | Holds |
+| --- | --- | --- |
+| Fundraiser | `["fundraiser", maker]` | target, vault mint, minter, flags, counts |
+| Vault | ATA(`mint_to_raise`, fundraiser) | donated SPL |
+| Contributor | `["contributor", fundraiser, donor]` | amount, position, collaborations, `badge_minted` |
+| Badge mint | `["badge", fundraiser, donor]` | Token-2022 mint (NFT) |
+| Badge ATA | ATA(badge mint, donor, Token-2022) | supply `1` |
 
-- mint_to_raise: The mint that the user wants to receive. This will be a Mint Account, that we will use to store the mint address
+One campaign per maker (PDA is only seeded by maker).
 
-- fundraiser: will be the state account that we will initialize and the maker will be paying for the initialization of the account.
-We derive the Fundraiser PDA from the byte representation of the word "fundraiser" and the reference of the maker publick key. Anchor will calculate the canonical bump (the first bump that throes that address out of the ed25519 eliptic curve) and save it for us in a struct
+### Instructions
 
-- vault: We will initialize a vault (ATA) to receive the contributions. This account will be derived from the mint that the user wants to receive, and the fundraiser account that we are just creating
+| Ix | Who | What |
+| --- | --- | --- |
+| `initialize(amount, duration)` | maker | Create campaign + vault. `minter` is a remaining account, stored on the campaign. |
+| `contribute(amount)` | donor | SPL transfer into vault; history + `ContributionRecorded`. |
+| `check_contributions` | maker | If vault ≥ target, pay maker, set `is_claimed`, emit `CampaignClaimed`. Does **not** close. |
+| `airdrop_badge(uri)` | **minter** only | After claim: Token-2022 soulbound NFT for one donor. |
+| `close_fundraiser` | maker | After claim **and** all badges; close vault then campaign. |
+| `refund` | donor | After deadline, target missed; close contributor PDA. |
 
-- system_program: Program resposible for the initialization of any new account
+### Events (for the observer)
 
-- token_program and associated_token_program: We are creating new ATAs
+- `ContributionRecorded` — index donors (hint; observer also `getProgramAccounts`s contributor PDAs).
+- `CampaignClaimed` — start the airdrop crank.
+- `BadgeAirdropped` — mint + uri for logs.
 
-### We then implement some functionality for our Initialize context:
+`onLogs` is **not** a queue. Restart the observer and the in-memory index is empty. On claim we also load contributors from chain (`memcmp` at offset 8 = `fundraiser` pubkey).
 
-```rust
-impl<'info> Initialize<'info> {
-    pub fn initialize(&mut self, amount: u64, duration: u8, bumps: &InitializeBumps) -> Result<()> {
+### On-chain vs off-chain metadata
 
-        // Check if the amount to raise meets the minimum amount required
-        require!(
-            amount > MIN_AMOUNT_TO_RAISE.pow(self.mint_to_raise.decimals as u32),
-            FundraiserError::InvalidAmount
-        );
-
-        // Initialize the fundraiser account
-        self.fundraiser.set_inner(Fundraiser {
-            maker: self.maker.key(),
-            mint_to_raise: self.mint_to_raise.key(),
-            amount_to_raise: amount,
-            current_amount: 0,
-            time_started: Clock::get()?.unix_timestamp,
-            duration,
-            bump: bumps.fundraiser
-        });
-        
-        Ok(())
-    }
-}
+```
+Token-2022 mint  →  name / symbol / uri  (TLV, soulbound)
+uri              →  Metaplex JSON: image, attributes, properties.collaborations
 ```
 
-In here, we basically just set the data of our Fundraiser account if the amount to raise is bigger than 3 (minimum amount)
+Pinata JWT is only needed to **pin that JSON**. The PNG can already live at `BADGE_IMAGE_URI`. No JWT → observer still mints, with a fixture `https://example.com/badge.json`.
+
+### Why an observer
+
+One Solana tx cannot mint N NFTs for N donors (CU + account limits). The program mints **one** badge per `airdrop_badge`. A crank (this repo: `scripts/badge-observer.ts`) is the intended caller. `minter` is fixed at `initialize` so the crank key can mint **without** holding the maker key.
 
 ---
 
-### Users will be able to contribute to a fundraising
+## What changed from the original school program (and why)
 
-A contribution account consists of:
+| Original | Now | Why |
+| --- | --- | --- |
+| `check_contributions` had `close = maker` | Campaign stays. New `close_fundraiser` after badges | Closing on claim destroyed the PDA we need as mint authority / lookup. |
+| Contributor was just `amount: u64` | `position`, `collaborations[]`, `badge_minted`, links to fundraiser + wallet | Credential needs “who, when, how much, nth donor”. |
+| No NFT | `airdrop_badge` Token-2022 **NonTransferable** | Soulbound = extension, not freeze (freeze can be thawed). |
+| Anyone could theoretically crank | `payer == fundraiser.minter` | Observer key is authorized at init. |
+| `1_u8.pow(decimals)` / `MIN.pow(decimals)` | `10u64.pow(decimals)` | Old “min 1 token” was `1^n == 1` raw unit. Target min was `3^decimals`, not 3 tokens. |
+| Duration check on contribute was inverted in the README | Window: `(now - start) / 86400 < duration` | Original snippet in this file allowed contribute *after* the deadline. |
+| Anchor CPI took `AccountInfo` | Anchor 1.0+ `CpiContext` takes the **program id** | Version bump. |
+| Claim was the end | Claim → badges → close | NFT airdrop is a second phase. |
 
-```rust
-#[account]
-#[derive(InitSpace)]
-pub struct Contributor {
-    pub amount: u64,
-}
-```rust
-
-In this account we will only store the total amount contributed by a specific contributor
-
-#[derive(Accounts)]
-pub struct Contribute<'info> {
-    #[account(mut)]
-    pub contributor: Signer<'info>,
-    pub mint_to_raise: Account<'info, Mint>,
-    #[account(
-        mut,
-        has_one = mint_to_raise,
-        seeds = [b"fundraiser".as_ref(), fundraiser.maker.as_ref()],
-        bump = fundraiser.bump,
-    )]
-    pub fundraiser: Account<'info, Fundraiser>,
-    #[account(
-        init_if_needed,
-        payer = contributor,
-        seeds = [b"contributor", fundraiser.key().as_ref(), contributor.key().as_ref()],
-        bump,
-        space = ANCHOR_DISCRIMINATOR + Contributor::INIT_SPACE,
-    )]
-    pub contributor_account: Account<'info, Contributor>,
-    #[account(
-        mut,
-        associated_token::mint = mint_to_raise,
-        associated_token::authority = contributor
-    )]
-    pub contributor_ata: Account<'info, TokenAccount>,
-    #[account(
-        mut,
-        associated_token::mint = fundraiser.mint_to_raise,
-        associated_token::authority = fundraiser
-    )]
-    pub vault: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, System>,
-}
-```
-
-In this context, we are passing all the accounts needed to contribute to a fundraising campaign:
-
-- contributor: The address of the person that is contributing
-
-- mint_to_raise: the mint that the maker is expecting to receive as contributions
-
-- fundraiser: An initialized Fundraiser account where appropriate checks will be performed, such as the appropriate mint, the seeds and the bump of the Fundraiser PDA
-
-- contributor account: We initialize (if needed) a contributor account that will store the total amount that a specific contributor has contributed with so far
-
-- contributor_ata: The ata where we will be transfering tokens from. We make sure that the authority and mint of the ATA are correct (mint_to_raise and contributor address), and we mark it as mutable since we will be deducting tokens from that account
-
-- vault: The ata where we will be depositing tokens to. We make sure that the authority and mint of the ATA are correct (mint_to_raise and Fundraiser account), and we mark it as mutable since we will be depositing tokens in that account
-
-- token_program: We will performing CPIs (Cross Program Invocations) to the token program to transfer tokens
-
-### We then implement some functionality for our Contribute context:
-
-```rust
-impl<'info> Contribute<'info> {
-    pub fn contribute(&mut self, amount: u64) -> Result<()> {
-
-        // Check if the amount to contribute meets the minimum amount required
-        require!(
-            amount > 1_u8.pow(self.mint_to_raise.decimals as u32) as u64, 
-            FundraiserError::ContributionTooSmall
-        );
-
-        // Check if the amount to contribute is less than the maximum allowed contribution
-        require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
-            FundraiserError::ContributionTooBig
-        );
-
-        // Check if the maximum contributions per contributor have been reached
-        require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
-            FundraiserError::MaximumContributionsReached
-        );
-
-        // Check if the fundraising duration has been reached
-        let current_time = Clock::get()?.unix_timestamp;
-        require!(
-            self.fundraiser.duration <= ((current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS) as u8,
-            crate::FundraiserError::FundraisingEnded
-        );
-
-        // Transfer the funds to the vault
-        // CPI to the token program to transfer the funds
-        let cpi_program = self.token_program.to_account_info();
-
-        // Transfer the funds from the contributor to the vault
-        let cpi_accounts = Transfer {
-            from: self.contributor_ata.to_account_info(),
-            to: self.vault.to_account_info(),
-            authority: self.contributor.to_account_info(),
-        };
-
-        // Crete a CPI context
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-
-        // Transfer the funds from the contributor to the vault
-        transfer(cpi_ctx, amount)?;
-
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
-
-        self.contributor_account.amount += amount;
-
-        Ok(())
-    }
-}
-```
-In here, we make some checks:
-- We check that the user is depositing at least one token
-
-- We Check that the user is not contributiong with more than 10% of the target amount
-
-- We check that the total contributions of the user do not exceed a total of 10% of the target amount
-
-- We check that the fundraising duration has not elapsed
-
-After, we create a CPI to the token program, to transfer a certain amount of SPL tokens from the Contributor ATA to the vault.
-We pass the authority of the account where the tokens are being deducted from (In this case is the contributor, as he is the authority of the contributor ata).
-
-Lastly, we update our state acounts with the right amounts
+State additions on `Fundraiser`: `minter`, `contributor_count`, `badges_minted`, `is_claimed`.
 
 ---
 
-### User will be able to claim the tokens once the fundraiding target has been reached
+## Repo map
 
-```rust
-#[derive(Accounts)]
-pub struct CheckContributions<'info> {
-    #[account(mut)]
-    pub maker: Signer<'info>,
-    pub mint_to_raise: Account<'info, Mint>,
-    #[account(
-        mut,
-        seeds = [b"fundraiser".as_ref(), maker.key().as_ref()],
-        bump = fundraiser.bump,
-        close = maker,
-    )]
-    pub fundraiser: Account<'info, Fundraiser>,
-    #[account(
-        mut,
-        associated_token::mint = mint_to_raise,
-        associated_token::authority = fundraiser,
-    )]
-    pub vault: Account<'info, TokenAccount>,
-    #[account(
-        init_if_needed,
-        payer = maker,
-        associated_token::mint = mint_to_raise,
-        associated_token::authority = maker,
-    )]
-    pub maker_ata: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, System>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-}
 ```
-
-In this context, we are passing all the accounts needed for a user to claim the raised tokens:
-
-- maker: The address of the person raising the the funds. We mark it as mutable since the maker will be paying for initialization fees and will receive lamports from rent back
-
-- mint_to_raise: the mint that the maker is expecting to receive as contributions
-
-- fundraiser: An initialized Fundraiser account where appropriate checks will be performed, such as the appropriate mint, the seeds and the bump of the Fundraiser PDA
-
-- vault: The ata where we will be transfering tokens from. We make sure that the authority and mint of the ATA are correct (mint_to_raise and fundraiser account), and we mark it as mutable since we will be deducting tokens from that account
-
-- maker_ata: The ata where we will be depositing tokens to. We make sure that the authority and mint of the ATA are correct (mint_to_raise and maker account), and we mark it as mutable since we will be depositing tokens in that account.
-In case we need to initialize this ATA, the maker will be paying for the initialization fees
-
-- system_program and associated_token_program: Since we are initializing new ATAs
-
-- token_program: We will performing CPIs (Cross Program Invocations) to the token program to transfer tokens
-
-### We then implement some functionality for our Contribute context:
-
-```rust
-impl<'info> CheckContributions<'info> {
-    pub fn check_contributions(&self) -> Result<()> {
-        
-        // Check if the target amount has been met
-        require!(
-            self.vault.amount >= self.fundraiser.amount_to_raise,
-            FundraiserError::TargetNotMet
-        );
-
-        // Transfer the funds to the maker
-        // CPI to the token program to transfer the funds
-        let cpi_program = self.token_program.to_account_info();
-
-        // Transfer the funds from the vault to the maker
-        let cpi_accounts = Transfer {
-            from: self.vault.to_account_info(),
-            to: self.maker_ata.to_account_info(),
-            authority: self.fundraiser.to_account_info(),
-        };
-
-        // Signer seeds to sign the CPI on behalf of the fundraiser account
-        let signer_seeds: [&[&[u8]]; 1] = [&[
-            b"fundraiser".as_ref(),
-            self.maker.to_account_info().key.as_ref(),
-            &[self.fundraiser.bump],
-        ]];
-
-        // CPI context with signer since the fundraiser account is a PDA
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
-
-        // Transfer the funds from the vault to the maker
-        transfer(cpi_ctx, self.vault.amount)?;
-
-        Ok(())
-    }
-}
+programs/fundraiser/src/
+  lib.rs                 six instructions
+  state/                 Fundraiser, Contributor, Collaboration
+  instructions/          initialize, contribute, checker, airdrop_badge, close_fundraiser, refund
+  events.rs
+scripts/
+  badge-observer.ts      websocket crank + optional Pinata
+  e2e-observer.ts        10 wallets hit a 30-token target, then claim
+  load-config.ts         .env
+  build-badge-json.ts    Metaplex JSON
+  pinata.ts              Pinata v3 upload
+tests/
+  fundraiser.ts          happy-ish path + “cannot mint before claim”
+  time-window.ts         live clock
+  time-window-bankrun.ts warp clock → refund
+  badge-json.ts          JSON + config, no validator
 ```
-
-In this implementation, we check if the amount of tokens in the vault is equal or bigger then the fundraising campaign target.
-If it is, then we perform a CPI to the token program to transfer the funds from the vault to the maker ATA. Since the vault is an ATA, we need to create our CPI contexr with a signer and use the seeds and bump from the PDA (We are signing with our program on behalf of that PDA).
-
-Finally, we close our Fundraiser account and send the lamports from the rent back to the maker (done with the "close" constraint int the Fundraiser account).
-
 
 ---
 
-### Users will be able to refund their contributions, if the duration of the fundraising has elapsed and the target has not reached
+## Tests (`anchor test`)
 
-#[derive(Accounts)]
-pub struct Refund<'info> {
-    #[account(mut)]
-    pub contributor: Signer<'info>,
-    pub maker: SystemAccount<'info>,
-    pub mint_to_raise: Account<'info, Mint>,
-    #[account(
-        mut,
-        has_one = mint_to_raise,
-        seeds = [b"fundraiser", maker.key().as_ref()],
-        bump = fundraiser.bump,
-    )]
-    pub fundraiser: Account<'info, Fundraiser>,
-    #[account(
-        mut,
-        seeds = [b"contributor", fundraiser.key().as_ref(), contributor.key().as_ref()],
-        bump,
-        close = contributor,
-    )]
-    pub contributor_account: Account<'info, Contributor>,
-    #[account(
-        mut,
-        associated_token::mint = mint_to_raise,
-        associated_token::authority = contributor
-    )]
-    pub contributor_ata: Account<'info, TokenAccount>,
-    #[account(
-        mut,
-        associated_token::mint = mint_to_raise,
-        associated_token::authority = fundraiser
-    )]
-    pub vault: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, System>,
-}
+Mocha globs `tests/**/*.ts`. `anchor test` spins a **private** validator, runs mocha, **kills it**. That is **not** the observer.
 
-In this context, we are passing all the accounts needed for a contributor to refund their tokens:
-
-- contributor: The address of the person that is contributing
-
-- maker: The address of the person raising the the funds.
-
-- mint_to_raise: the mint that the maker is expecting to receive as contributions
-
-- fundraiser: An initialized Fundraiser account where appropriate checks will be performed, such as the appropriate mint, the seeds and the bump of the Fundraiser PDA
-
-- contributor account: An initialized Contributor account that will store the total amount that a specific contributor has contributed with so far
-
-- contributor_ata: The ata where we will be transfering tokens to. We make sure that the authority and mint of the ATA are correct (mint_to_raise and contributor address), and we mark it as mutable since we will be depositing tokens to that account
-
-- vault: The ata where we will be withdrawing tokens from. We make sure that the authority and mint of the ATA are correct (mint_to_raise and Fundraiser account), and we mark it as mutable since we will be withdrawing tokens from that account
-
-- token_program: We will performing CPIs (Cross Program Invocations) to the token program to transfer tokens
-
-### We then implement some functionality for our Refund context:
-
-```rust
-impl<'info> Refund<'info> {
-    pub fn refund(&mut self) -> Result<()> {
-
-        // Check if the fundraising duration has been reached
-        let current_time = Clock::get()?.unix_timestamp;
- 
-        require!(
-            self.fundraiser.duration <= ((current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS) as u8,
-            crate::FundraiserError::FundraiserNotEnded
-        );
-
-        require!(
-            self.vault.amount < self.fundraiser.amount_to_raise,
-            crate::FundraiserError::TargetMet
-        );
-
-        // Transfer the funds back to the contributor
-        // CPI to the token program to transfer the funds
-        let cpi_program = self.token_program.to_account_info();
-
-        // Transfer the funds from the vault to the contributor
-        let cpi_accounts = Transfer {
-            from: self.vault.to_account_info(),
-            to: self.contributor_ata.to_account_info(),
-            authority: self.fundraiser.to_account_info(),
-        };
-
-        // Signer seeds to sign the CPI on behalf of the fundraiser account
-        let signer_seeds: [&[&[u8]]; 1] = [&[
-            b"fundraiser".as_ref(),
-            self.maker.to_account_info().key.as_ref(),
-            &[self.fundraiser.bump],
-        ]];
-
-        // CPI context with signer since the fundraiser account is a PDA
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
-
-        // Transfer the funds from the vault to the contributor
-        transfer(cpi_ctx, self.contributor_account.amount)?;
-
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
-
-        Ok(())
-    }
-}
+```bash
+anchor test
 ```
 
-In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
-After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+JSON helpers only:
+
+```bash
+yarn run ts-mocha -p ./tsconfig.json -t 10000 tests/badge-json.ts
+```
+
+`fundraiser.ts` cannot finish a real airdrop with one wallet: 10% cap vs a 30-token target. It asserts `CampaignNotClaimed` if you mint too early. Full mint is the local e2e below.
+
+---
+
+## Local scripts (observer + badges)
+
+Need a validator that **stays up**. `anchor test` will fight you for `:8899`.
+
+**Terminal A — validator**
+
+```bash
+solana-test-validator          # first time
+# or, after a failed upgrade / dirty ledger:
+solana-test-validator --reset
+```
+
+**Terminal B — deploy**
+
+```bash
+anchor deploy
+```
+
+If upgrade dies with `ExtendProgram was superseded by ExtendProgramChecked`, reset the validator and deploy fresh. Localnet is disposable.
+
+**Env**
+
+```bash
+cp .env.example .env
+```
+
+| Var | Role |
+| --- | --- |
+| `SOLANA_RPC_URL` / `SOLANA_WS_URL` | default local `8899` / `8900` |
+| `BADGE_IMAGE_URI` | PNG CID / gateway URL you already pinned |
+| `PINATA_JWT` | optional. Empty → fixture uri. Set → Pinata **v3** (`org:files:write`). Legacy `/pinning/pinJSONToIPFS` keys will 403 `NO_SCOPES_FOUND`. |
+| `AIRDROP_PAYER_KEYPAIR` | must be the **same pubkey** passed as `minter` in `initialize` (e2e uses `AnchorProvider` wallet = `~/.config/solana/id.json`) |
+| `BADGE_URI_SCHEME` | `ipfs` → `ipfs://<cid>` or `gateway` |
+
+Node does **not** load `.env` by itself; `load-config.ts` uses `dotenv`. `~` in paths is not expanded by Yarn — scripts use `$HOME` / `expandHome`.
+
+**Terminal C — observer** (start **before** the e2e, or pass a fundraiser pubkey to crank after claim)
+
+```bash
+yarn observe
+# or crank a campaign that already claimed:
+yarn observe -- <fundraiser-pubkey>
+```
+
+**Terminal D — 10 donors + claim**
+
+```bash
+yarn e2e-test
+```
+
+That script: create mint (6 decimals), `initialize(30_000_000, 7)` with `minter =` your id.json, 10 keypairs × `3_000_000`, then `check_contributions`. Observer should log `minting nft` / off-chain JSON / `nft minted` (on-chain name/symbol/uri, ATA amount `1`).
+
+If the observer was down during contribute, crank still works: contributors are loaded from chain.
+
+---
+
+## Constraints that bite
+
+- **10% cap** → one wallet cannot complete the demo campaign. Use `yarn e2e-test`.
+- **Token-2022 mint size**: create the mint account as `Mint + NonTransferable + MetadataPointer` only. Metadata TLV is realloc’d **after** `InitializeMint2`. Pre-sizing for JSON uri makes `InitializeMint2` return `InvalidAccountData`.
+- **Pinata**: current keys are v3 (`uploads.pinata.cloud/v3/files`). Need Files **write**, not a gateway-only JWT.
+- **`onLogs`**: not historical. Backfill is `contributor.all({ memcmp offset 8 })`.
+
+---
+
+## Layout reminder (raise amounts)
+
+Raise mint in tests/e2e is **6 decimals**. `30_000_000` = 30 tokens. Max per wallet = 3 tokens = `3_000_000`. Minimum campaign size is **> 3 whole tokens** of that mint.

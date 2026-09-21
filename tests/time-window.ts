@@ -128,6 +128,7 @@ describe("fundraiser — contribution window", () => {
       .initialize(new anchor.BN(TARGET), durationDays)
       .accountsPartial({
         maker: maker.publicKey,
+        minter: provider.publicKey,
         mintToRaise: mint,
         fundraiser,
         vault,

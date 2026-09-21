@@ -16,6 +16,7 @@ use crate::{
 pub struct Initialize<'info> {
     #[account(mut)]
     pub maker: Signer<'info>,
+    pub minter: SystemAccount<'info>,
     pub mint_to_raise: Account<'info, Mint>,
     #[account(
         init,
@@ -57,11 +58,15 @@ impl<'info> Initialize<'info> {
         // Initialize the fundraiser account
         self.fundraiser.set_inner(Fundraiser {
             maker: self.maker.key(),
+            minter: self.minter.key(),
             mint_to_raise: self.mint_to_raise.key(),
             amount_to_raise: amount,
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
+            contributor_count: 0,
+            badges_minted: 0,
+            is_claimed: false,
             bump: bumps.fundraiser
         });
         

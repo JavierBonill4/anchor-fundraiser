@@ -52,7 +52,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
   /** Signs with the payer plus any extras and runs the transaction. */
   const send = async (
     ixs: anchor.web3.TransactionInstruction[],
-    signers: anchor.web3.Keypair[] = []
+    signers: anchor.web3.Keypair[] = [],
   ) => {
     const tx = new anchor.web3.Transaction();
     // Fetch it each time: two identical transactions on the same blockhash are
@@ -83,12 +83,14 @@ describe("fundraiser — the window closes (bankrun)", () => {
         clock.epochStartTimestamp,
         clock.epoch,
         clock.leaderScheduleEpoch,
-        before.unixTimestamp + days * DAY
-      )
+        before.unixTimestamp + days * DAY,
+      ),
     );
   };
 
-  const tokenBalance = async (address: anchor.web3.PublicKey): Promise<bigint> => {
+  const tokenBalance = async (
+    address: anchor.web3.PublicKey,
+  ): Promise<bigint> => {
     const account = await context.banksClient.getAccount(address);
     assert.isNotNull(account, "token account should exist");
     return unpackAccount(address, {
@@ -117,7 +119,9 @@ describe("fundraiser — the window closes (bankrun)", () => {
     const byNumber = text.match(/custom program error: (0x[0-9a-fA-F]+)/);
     if (byNumber) {
       const code = parseInt(byNumber[1], 16);
-      const known = (program.idl.errors ?? []).find((e: any) => e.code === code);
+      const known = (program.idl.errors ?? []).find(
+        (e: any) => e.code === code,
+      );
       if (known) return known.name;
       return `custom error ${code}`;
     }
@@ -132,7 +136,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
     assert.strictEqual(
       actual.toLowerCase(),
       expected.toLowerCase(),
-      `${why} (expected ${expected}, got ${actual})`
+      `${why} (expected ${expected}, got ${actual})`,
     );
   };
 
@@ -164,20 +168,34 @@ describe("fundraiser — the window closes (bankrun)", () => {
           programId: TOKEN_PROGRAM_ID,
         }),
         createInitializeMint2Instruction(mint, 6, payer.publicKey, null),
-        createAssociatedTokenAccountInstruction(payer.publicKey, contributorAta, payer.publicKey, mint),
-        createMintToInstruction(mint, contributorAta, payer.publicKey, 10 * CONTRIBUTION),
+        createAssociatedTokenAccountInstruction(
+          payer.publicKey,
+          contributorAta,
+          payer.publicKey,
+          mint,
+        ),
+        createMintToInstruction(
+          mint,
+          contributorAta,
+          payer.publicKey,
+          10 * CONTRIBUTION,
+        ),
       ],
-      [mintKeypair]
+      [mintKeypair],
     );
 
     // --- open a seven day campaign --------------------------------------
     const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
-      program.programId
+      program.programId,
     );
     const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
-      program.programId
+      [
+        Buffer.from("contributor"),
+        fundraiser.toBuffer(),
+        payer.publicKey.toBuffer(),
+      ],
+      program.programId,
     );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
@@ -187,6 +205,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
           .initialize(new anchor.BN(TARGET), DURATION_DAYS)
           .accountsPartial({
             maker: maker.publicKey,
+            minter: provider.publicKey,
             mintToRaise: mint,
             fundraiser,
             vault,
@@ -196,7 +215,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
           })
           .instruction(),
       ],
-      [maker]
+      [maker],
     );
 
     const contributeIx = () =>
@@ -220,13 +239,13 @@ describe("fundraiser — the window closes (bankrun)", () => {
     } catch (err) {
       assert.fail(
         `a contribution on day 0 of a ${DURATION_DAYS} day fundraiser must be ` +
-          `accepted, but it was rejected with ${errorCodeOf(err)}`
+          `accepted, but it was rejected with ${errorCodeOf(err)}`,
       );
     }
     assert.strictEqual(
       await tokenBalance(vault),
       BigInt(CONTRIBUTION),
-      "the contribution should be in the vault"
+      "the contribution should be in the vault",
     );
 
     // --- day 8: past the deadline, and short of the target ---------------
@@ -236,8 +255,11 @@ describe("fundraiser — the window closes (bankrun)", () => {
       await send([await contributeIx()]);
       assert.fail("a contribution after the deadline must be refused");
     } catch (err) {
-      assertErrorIs(err, "FundraiserEnded",
-        "the contribution should be refused because the window has closed");
+      assertErrorIs(
+        err,
+        "FundraiserEnded",
+        "the contribution should be refused because the window has closed",
+      );
     }
 
     // The campaign failed, so the money has to be reachable again.
@@ -258,11 +280,22 @@ describe("fundraiser — the window closes (bankrun)", () => {
         .instruction(),
     ]);
 
-    assert.strictEqual(await tokenBalance(vault), 0n, "the vault should be empty");
+    assert.strictEqual(
+      await tokenBalance(vault),
+      0n,
+      "the vault should be empty",
+    );
     assert.strictEqual(
       await tokenBalance(contributorAta),
       BigInt(10 * CONTRIBUTION),
-      "the contributor should have every token back"
+      "the contributor should have every token back",
     );
+
+    const [badgeMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("badge"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
+      program.programId,
+    );
+    const badge = await context.banksClient.getAccount(badgeMint);
+    assert.isNull(badge, "failed campaign must not mint a badge");
   });
 });

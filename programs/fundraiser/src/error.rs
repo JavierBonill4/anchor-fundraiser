@@ -17,5 +17,21 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("Too many collaborations for this contributor")]
+    TooManyCollaborations,
+    #[msg("The campaign has already been claimed")]
+    AlreadyClaimed,
+    #[msg("The metadata URI is empty or too long")]
+    InvalidUri,
+    #[msg("The campaign has not been claimed yet")]
+    CampaignNotClaimed,
+    #[msg("This contributor already received a badge")]
+    BadgeAlreadyMinted,
+    #[msg("Not every contributor has received a badge")]
+    BadgesOutstanding,
+    #[msg("The vault still holds tokens")]
+    VaultNotEmpty,
+    #[msg("Only the designated minter can airdrop badges")]
+    UnauthorizeMinter,
 }

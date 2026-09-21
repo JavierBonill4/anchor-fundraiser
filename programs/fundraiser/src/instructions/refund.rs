@@ -56,12 +56,14 @@ impl<'info> Refund<'info> {
 
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
- 
+
         require!(
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 >= self.fundraiser.duration as i64,
             crate::FundraiserError::FundraiserNotEnded
         );
+
+        require!(!self.fundraiser.is_claimed, crate::FundraiserError::AlreadyClaimed);
 
         require!(
             self.vault.amount < self.fundraiser.amount_to_raise,
