@@ -490,3 +490,136 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+ 
+## Extension: Non-Transferable NFT Receipt
+ 
+Everything above is the base program, unmodified. This section documents one
+feature added on top of it: a permanent, non-transferable receipt minted to
+each contributor on their first contribution.
+ 
+### What it does
+ 
+This feature mints a unique, non-transferable digital receipt to every
+contributor the first time they back a campaign. It is a permanent, on-chain
+badge proving that this wallet — and only this wallet — contributed to this
+specific fundraiser. Because the receipt cannot be sold, gifted, or
+transferred, it functions purely as proof of participation rather than as a
+tradeable collectible.
+ 
+If the campaign fails to reach its target, a contributor must burn their
+receipt in the same transaction that returns their funds. The receipt and
+the contribution are treated as a single unit: you cannot hold proof of
+having backed a campaign you have since been refunded from.
+ 
+### How it works
+ 
+The feature touches two existing instructions (`contribute` and `refund`)
+and adds no new ones. It relies on the Token-2022 program rather than the
+legacy Token program, specifically its `NonTransferable` mint extension.
+ 
+**State added**
+ 
+A single field appended to `Contributor`:
+ 
+```rust
+#[account]
+#[derive(InitSpace)]
+pub struct Contributor {
+    pub amount: u64,
+    pub has_receipt: bool,
+}
+```
+ 
+This flag — not account existence, and not `init_if_needed`'s implicit
+behavior — is what guarantees the mint-and-lock sequence below runs exactly
+once per contributor. `init_if_needed` on its own is not sufficient: on a
+second contribution the mint and ATA already exist, so init is skipped, but
+nothing stops a naive implementation from re-attempting `mint_to` regardless.
+Since mint authority is already `None` by then, that second attempt would
+fail the CPI and revert the *entire* second contribution — not just the
+receipt logic. The explicit flag, checked before any receipt-related code
+runs, avoids this entirely.
+ 
+**The receipt mint**
+ 
+Derived as a PDA so no address needs to be stored anywhere:
+ 
+````
+[b"receipt", fundraiser.key(), contributor.key()]
+````
+ 
+Mint authority is the fundraiser PDA. The mint carries two properties, both
+set once, at creation:
+ 
+1. **Supply capped at 1.** One token is minted to the contributor's
+   associated token account, after which mint authority is set to `None`
+   via `set_authority`. No more of this specific mint can ever be created.
+2. **Non-transferable.** The mint is initialized with Token-2022's
+   `NonTransferable` extension before its base state is initialized
+   (extension data must be reserved in the account's TLV layout before
+   `InitializeMint2` finalizes it). Once set, the SPL Token-2022 program
+   itself refuses any `Transfer` instruction against tokens of this mint —
+   this is enforced by the token program, not by this program's logic, so it
+   holds regardless of what any client attempts.
+ 
+Note that `NonTransferable` blocks transfers specifically. It does not block
+`Burn`, which is what the refund path below depends on.
+ 
+**Where it fires**
+ 
+| Instruction | Behavior |
+|---|---|
+| `contribute` | On a contributor's first contribution (`has_receipt == false`), creates the receipt mint and the contributor's receipt ATA (`init_if_needed`), initializes the `NonTransferable` extension, initializes the mint, mints exactly 1 token, then permanently clears mint authority. Sets `has_receipt = true` before issuing any CPI. Subsequent contributions from the same contributor skip this block entirely. |
+| `refund` | Requires the contributor to pass their receipt mint and receipt ATA. Executes a `burn` CPI for 1 token, then transfers the original contribution back from the vault. The burn is attempted first: since both CPIs execute inside one atomic instruction, a failed burn reverts the entire instruction regardless of ordering, so the transfer would never persist without a successful burn either way. Burning first simply fails fast, spending no compute on a transfer that would be rolled back. |
+ 
+### What it costs
+ 
+- **Rent.** Two new accounts per contributor: the receipt mint and the
+  receipt ATA. The mint is larger than a standard SPL Token mint because it
+  carries TLV extension data for `NonTransferable`. This rent is paid by the
+  contributor at the time of their first contribution, alongside their
+  normal transfer into the vault.
+- **Compute.** `contribute` absorbs meaningfully more compute on a
+  contributor's first call: two account inits (`init_if_needed` on the mint
+  and ATA), an extension-initialization CPI, a mint-initialization CPI, a
+  `mint_to` CPI, and a `set_authority` CPI. Every subsequent contribution
+  from the same contributor pays none of this — the `has_receipt` check
+  short-circuits before any of it runs. `refund` absorbs one additional CPI
+  (`burn`) beyond its original cost.
+ 
+### How you would attack it
+ 
+The `NonTransferable` extension closes the vector this design would
+otherwise be most vulnerable to: a contributor moving the receipt to another
+wallet, or selling it, to dodge the burn-on-refund requirement while keeping
+their funds locked in the vault as unrecoverable-by-anyone collateral. Since
+the token program itself rejects any transfer of this mint, that specific
+attack is not merely discouraged — it is impossible to execute, by any
+client, regardless of how the transaction is constructed.
+ 
+What remains is narrower. A contributor can still burn their own receipt
+directly — outside this program, using the plain SPL Token-2022 burn
+instruction — at any time, for any reason, before ever calling `refund`.
+Nothing about `NonTransferable` prevents an owner from destroying their own
+token; it only prevents them from giving it to someone else. If a
+contributor does this and the campaign later fails, their subsequent call to
+`refund` fails at the burn CPI (their balance is already zero), and their
+original contribution has no path back to them: the maker cannot claim it
+because the target was not met, and the contributor cannot claim it because
+they cannot produce the receipt `refund` requires.
+ 
+This is a real gap, but a much smaller one than the transferable version's:
+it requires the contributor to actively destroy their own proof of
+participation for no benefit to anyone, including themselves, before any
+refund is even in question. It is best understood as a self-inflicted
+footgun rather than an exploitable attack — there is no incentive for a
+rational contributor to trigger it, and no third party can trigger it on
+their behalf. I chose to accept this residual risk rather than add further
+complexity (such as a separate on-chain "eligible amount" record that would
+let refunds proceed independent of receipt possession), because doing so
+would reintroduce exactly the possession-independent refund path that made
+the receipt meaningless as proof in the first place. A receipt that can be
+refunded around is not a receipt.
+ 

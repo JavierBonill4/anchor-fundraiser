@@ -1,0 +1,182 @@
+(node:3577) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/farooq/anchor-fundraiser/tests/time-window-bankrun.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/farooq/anchor-fundraiser/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+  fundraiser — the window closes (bankrun)
+[2026-09-20T17:53:23.923204700Z INFO  solana_program_test] "fundraiser" SBF program from target/deploy/fundraiser.so, modified 33 minutes, 746 ms, 756 µs and 700 ns ago
+[2026-09-20T17:53:24.787356400Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [1]
+[2026-09-20T17:53:24.787908800Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:24.788033700Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [1]
+[2026-09-20T17:53:24.788142400Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:24.788162600Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]
+[2026-09-20T17:53:24.789209100Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeMint2
+[2026-09-20T17:53:24.789373500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 2779 of 999700 compute units
+[2026-09-20T17:53:24.789499100Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.789544500Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]
+[2026-09-20T17:53:24.789831600Z DEBUG solana_runtime::message_processor::stable_log] Program log: Create
+[2026-09-20T17:53:24.790380700Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]
+[2026-09-20T17:53:24.790497300Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: GetAccountDataSize
+[2026-09-20T17:53:24.790675500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1595 of 991558 compute units
+[2026-09-20T17:53:24.790705700Z DEBUG solana_runtime::message_processor::stable_log] Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=
+[2026-09-20T17:53:24.790726200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.790845800Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-09-20T17:53:24.790873100Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:24.790895200Z DEBUG solana_runtime::message_processor::stable_log] Program log: Initialize the associated token account
+[2026-09-20T17:53:24.790933800Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]
+[2026-09-20T17:53:24.798318500Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeImmutableOwner
+[2026-09-20T17:53:24.798567900Z DEBUG solana_runtime::message_processor::stable_log] Program log: Please upgrade to SPL Token 2022 for immutable owner support
+[2026-09-20T17:53:24.798589700Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1405 of 984945 compute units
+[2026-09-20T17:53:24.798613000Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.798671000Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]
+[2026-09-20T17:53:24.798770600Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeAccount3
+[2026-09-20T17:53:24.799173400Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4214 of 981065 compute units
+[2026-09-20T17:53:24.799238100Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.799266700Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 20353 of 996921 compute units
+[2026-09-20T17:53:24.799285500Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success
+[2026-09-20T17:53:24.799326500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]
+[2026-09-20T17:53:24.799396000Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: MintTo
+[2026-09-20T17:53:24.799465600Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4490 of 976568 compute units
+[2026-09-20T17:53:24.799551200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.934409400Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT invoke [1]
+[2026-09-20T17:53:24.934545700Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: Contribute
+[2026-09-20T17:53:24.934601900Z DEBUG solana_runtime::message_processor::stable_log] Program log: AnchorError caused by account: fundraiser. Error Code: AccountNotInitialized. Error Number: 3012. Error Message: The program expected this account to be already initialized.
+[2026-09-20T17:53:24.934650300Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT consumed 5860 of 200000 compute units
+[2026-09-20T17:53:24.934819900Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT failed: custom program error: 0xbc4
+Contribute failed with error: Failed to process transaction: transport transaction error: Error processing Instruction 0: custom program error: 0xbc4 undefined
+    1) stops contributions and opens refunds once the deadline passes
+[2026-09-20T17:53:24.967728100Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [1]
+[2026-09-20T17:53:24.967795900Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:24.967815200Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [1]
+[2026-09-20T17:53:24.967828600Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:24.967878400Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]
+[2026-09-20T17:53:24.967939500Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeMint2
+[2026-09-20T17:53:24.968000800Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 2779 of 999700 compute units
+[2026-09-20T17:53:24.968022200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.968038600Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]
+[2026-09-20T17:53:24.968106600Z DEBUG solana_runtime::message_processor::stable_log] Program log: Create
+[2026-09-20T17:53:24.968173700Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]
+[2026-09-20T17:53:24.968303500Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: GetAccountDataSize
+[2026-09-20T17:53:24.968368500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1595 of 991558 compute units
+[2026-09-20T17:53:24.968385700Z DEBUG solana_runtime::message_processor::stable_log] Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=
+[2026-09-20T17:53:24.968401000Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.968467900Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-09-20T17:53:24.968510500Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:24.968529000Z DEBUG solana_runtime::message_processor::stable_log] Program log: Initialize the associated token account
+[2026-09-20T17:53:24.968554800Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]
+[2026-09-20T17:53:24.968731800Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeImmutableOwner
+[2026-09-20T17:53:24.968783900Z DEBUG solana_runtime::message_processor::stable_log] Program log: Please upgrade to SPL Token 2022 for immutable owner support
+[2026-09-20T17:53:24.968796100Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1405 of 984945 compute units
+[2026-09-20T17:53:24.968812300Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.968856200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]
+[2026-09-20T17:53:24.968904400Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeAccount3
+[2026-09-20T17:53:24.968958500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4214 of 981065 compute units
+[2026-09-20T17:53:24.968974500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.968994700Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 20353 of 996921 compute units
+[2026-09-20T17:53:24.969010500Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success
+[2026-09-20T17:53:24.969027000Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]
+[2026-09-20T17:53:24.969077300Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: MintTo
+[2026-09-20T17:53:24.969147300Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4490 of 976568 compute units
+[2026-09-20T17:53:24.969164700Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.991693900Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT invoke [1]
+[2026-09-20T17:53:24.991927700Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: Initialize
+[2026-09-20T17:53:24.992188400Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-09-20T17:53:24.992257900Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:24.994616200Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [2]
+[2026-09-20T17:53:24.994846500Z DEBUG solana_runtime::message_processor::stable_log] Program log: Create
+[2026-09-20T17:53:24.994969500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [3]
+[2026-09-20T17:53:24.995170100Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: GetAccountDataSize
+[2026-09-20T17:53:24.995228800Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1595 of 178038 compute units
+[2026-09-20T17:53:24.995260400Z DEBUG solana_runtime::message_processor::stable_log] Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=
+[2026-09-20T17:53:24.995280500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.995412700Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [3]
+[2026-09-20T17:53:24.995493900Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:24.995515300Z DEBUG solana_runtime::message_processor::stable_log] Program log: Initialize the associated token account
+[2026-09-20T17:53:24.995548700Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [3]
+[2026-09-20T17:53:24.995884600Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeImmutableOwner
+[2026-09-20T17:53:24.995950300Z DEBUG solana_runtime::message_processor::stable_log] Program log: Please upgrade to SPL Token 2022 for immutable owner support
+[2026-09-20T17:53:24.995966200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1405 of 171425 compute units
+[2026-09-20T17:53:24.995987400Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.996046500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [3]
+[2026-09-20T17:53:24.996146100Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeAccount3
+[2026-09-20T17:53:24.996203500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4214 of 167541 compute units
+[2026-09-20T17:53:24.996223800Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:24.996246100Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 20490 of 183513 compute units
+[2026-09-20T17:53:24.996265000Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success
+[2026-09-20T17:53:24.996334400Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT consumed 39100 of 200000 compute units
+[2026-09-20T17:53:24.996358200Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT success
+[2026-09-20T17:53:25.011789900Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT invoke [1]
+[2026-09-20T17:53:25.012101100Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: Contribute
+[2026-09-20T17:53:25.012304600Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-09-20T17:53:25.012364000Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:25.012620900Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]
+[2026-09-20T17:53:25.012941800Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: Transfer
+[2026-09-20T17:53:25.013101100Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4645 of 167045 compute units
+[2026-09-20T17:53:25.013205500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success
+[2026-09-20T17:53:25.013294100Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-09-20T17:53:25.013349800Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:25.013386800Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [2]
+[2026-09-20T17:53:25.013440600Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeNonTransferableMint
+[2026-09-20T17:53:25.013478200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 2240 of 157824 compute units
+[2026-09-20T17:53:25.013497600Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb success
+[2026-09-20T17:53:25.013534100Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [2]
+[2026-09-20T17:53:25.013583500Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeMint2
+[2026-09-20T17:53:25.013639500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 3866 of 154128 compute units
+[2026-09-20T17:53:25.013665500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb success
+[2026-09-20T17:53:25.013743800Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [2]
+[2026-09-20T17:53:25.013911600Z DEBUG solana_runtime::message_processor::stable_log] Program log: CreateIdempotent
+[2026-09-20T17:53:25.013984900Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [3]
+[2026-09-20T17:53:25.014082300Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: GetAccountDataSize
+[2026-09-20T17:53:25.014207600Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 2918 of 141439 compute units
+[2026-09-20T17:53:25.014232100Z DEBUG solana_runtime::message_processor::stable_log] Program return: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb rgAAAAAAAAA=
+[2026-09-20T17:53:25.014254200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb success
+[2026-09-20T17:53:25.014380500Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [3]
+[2026-09-20T17:53:25.014432700Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-09-20T17:53:25.014447400Z DEBUG solana_runtime::message_processor::stable_log] Program log: Initialize the associated token account
+[2026-09-20T17:53:25.014465900Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [3]
+[2026-09-20T17:53:25.014624000Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeImmutableOwner
+[2026-09-20T17:53:25.014681800Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 1924 of 133591 compute units
+[2026-09-20T17:53:25.014702400Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb success
+[2026-09-20T17:53:25.014747800Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [3]
+[2026-09-20T17:53:25.014811700Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeAccount3
+[2026-09-20T17:53:25.014951000Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 5429 of 129280 compute units
+[2026-09-20T17:53:25.015014700Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb success
+[2026-09-20T17:53:25.015058900Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 23188 of 146756 compute units
+[2026-09-20T17:53:25.015090800Z DEBUG solana_runtime::message_processor::stable_log] Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success
+[2026-09-20T17:53:25.015315300Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [2]
+[2026-09-20T17:53:25.015421900Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: MintTo
+[2026-09-20T17:53:25.015518500Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 5506 of 121757 compute units
+[2026-09-20T17:53:25.015589300Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb success
+[2026-09-20T17:53:25.015654900Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [2]
+[2026-09-20T17:53:25.015714700Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: SetAuthority
+[2026-09-20T17:53:25.015775200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 3564 of 114564 compute units
+[2026-09-20T17:53:25.015802600Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb success
+[2026-09-20T17:53:25.015845500Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT consumed 90175 of 200000 compute units
+[2026-09-20T17:53:25.015865900Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT success
+[2026-09-20T17:53:25.203126600Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [1]
+[2026-09-20T17:53:25.203232300Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: Burn
+[2026-09-20T17:53:25.203296700Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 5780 of 200000 compute units
+[2026-09-20T17:53:25.203312200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb success
+[2026-09-20T17:53:25.216573800Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT invoke [1]
+[2026-09-20T17:53:25.216739400Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: Refund
+[2026-09-20T17:53:25.217167600Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [2]
+[2026-09-20T17:53:25.217279600Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: Burn
+[2026-09-20T17:53:25.218008300Z DEBUG solana_runtime::message_processor::stable_log] Program log: Error: insufficient funds
+[2026-09-20T17:53:25.218065200Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 4994 of 168136 compute units
+[2026-09-20T17:53:25.218089900Z DEBUG solana_runtime::message_processor::stable_log] Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb failed: custom program error: 0x1
+[2026-09-20T17:53:25.218112300Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT consumed 36858 of 200000 compute units
+[2026-09-20T17:53:25.218134100Z DEBUG solana_runtime::message_processor::stable_log] Program 89a5zCpD8fQMbjfe7g9jyiCtBw23YRHinUXgy5nDT8UT failed: custom program error: 0x1
+    ✔ Abuse case, refund: cannot refund without burning receipt (279ms)
+
+
+  1 passing (1s)
+  1 failing
+
+  1) fundraiser — the window closes (bankrun)
+       stops contributions and opens refunds once the deadline passes:
+     AssertionError: a contribution on day 0 of a 7 day fundraiser must be accepted, but it was rejected with custom error 3012
+      at Context.<anonymous> (tests/time-window-bankrun.ts:204:14)
+
+
+

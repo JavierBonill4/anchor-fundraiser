@@ -12,6 +12,9 @@ import {
   createMintToInstruction,
   getAssociatedTokenAddressSync,
   unpackAccount,
+  getAccount,
+  createBurnInstruction,
+  TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
 import { assert, AssertionError } from "chai";
 
@@ -88,14 +91,14 @@ describe("fundraiser — the window closes (bankrun)", () => {
     );
   };
 
-  const tokenBalance = async (address: anchor.web3.PublicKey): Promise<bigint> => {
+  const tokenBalance = async (address: anchor.web3.PublicKey, programId = TOKEN_PROGRAM_ID): Promise<bigint> => {
     const account = await context.banksClient.getAccount(address);
     assert.isNotNull(account, "token account should exist");
     return unpackAccount(address, {
       ...account!,
       data: Buffer.from(account!.data),
       owner: new anchor.web3.PublicKey(account!.owner),
-    } as any).amount;
+    } as any, programId).amount;
   };
 
   /**
@@ -175,49 +178,35 @@ describe("fundraiser — the window closes (bankrun)", () => {
       [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
       program.programId
     );
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    await send([
+      await program.methods.initialize(new anchor.BN(TARGET), DURATION_DAYS).accountsPartial({
+        maker: maker.publicKey, mintToRaise: mint, fundraiser, vault
+      }).instruction(),
+    ], [maker]);
     const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
       program.programId
     );
-    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
-
-    await send(
-      [
-        await program.methods
-          .initialize(new anchor.BN(TARGET), DURATION_DAYS)
-          .accountsPartial({
-            maker: maker.publicKey,
-            mintToRaise: mint,
-            fundraiser,
-            vault,
-            systemProgram: anchor.web3.SystemProgram.programId,
-            tokenProgram: TOKEN_PROGRAM_ID,
-            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-          })
-          .instruction(),
-      ],
-      [maker]
+    
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
+      program.programId
     );
-
-    const contributeIx = () =>
-      program.methods
-        .contribute(new anchor.BN(CONTRIBUTION))
-        .accountsPartial({
-          contributor: payer.publicKey,
-          mintToRaise: mint,
-          fundraiser,
-          contributorAccount,
-          contributorAta,
-          vault,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        })
-        .instruction();
+    const contributorReceiptAta = getAssociatedTokenAddressSync(
+      receiptMint, payer.publicKey, false, TOKEN_2022_PROGRAM_ID
+    );
 
     // --- day 0: the window is open --------------------------------------
     try {
-      await send([await contributeIx()]);
-    } catch (err) {
+      await send([
+        await program.methods.contribute(new anchor.BN(CONTRIBUTION)).accountsPartial({
+          contributor: payer.publicKey, mintToRaise: mint, fundraiser, contributorAccount, contributorAta, vault, receiptMint, contributorReceiptAta
+        }).instruction()
+      ]);
+    } catch (err: any) {
+      console.log("Contribute failed with error:", err.message, err.logs);
       assert.fail(
         `a contribution on day 0 of a ${DURATION_DAYS} day fundraiser must be ` +
           `accepted, but it was rejected with ${errorCodeOf(err)}`
@@ -233,7 +222,11 @@ describe("fundraiser — the window closes (bankrun)", () => {
     await advanceDays(8n);
 
     try {
-      await send([await contributeIx()]);
+      await send([
+        await program.methods.contribute(new anchor.BN(CONTRIBUTION)).accountsPartial({
+          contributor: payer.publicKey, mintToRaise: mint, fundraiser, contributorAccount, contributorAta, vault, receiptMint, contributorReceiptAta
+        }).instruction()
+      ]);
       assert.fail("a contribution after the deadline must be refused");
     } catch (err) {
       assertErrorIs(err, "FundraiserEnded",
@@ -252,6 +245,9 @@ describe("fundraiser — the window closes (bankrun)", () => {
           contributorAccount,
           contributorAta,
           vault,
+          receiptMint,
+          contributorReceiptAta,
+          token2022Program: TOKEN_2022_PROGRAM_ID,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
@@ -264,5 +260,73 @@ describe("fundraiser — the window closes (bankrun)", () => {
       BigInt(10 * CONTRIBUTION),
       "the contributor should have every token back"
     );
+    
+    // 4. Abuse case, refund: receipt ATA balance is 0
+    assert.strictEqual(await tokenBalance(contributorReceiptAta, TOKEN_2022_PROGRAM_ID), 0n, "the receipt ATA should be empty (receipt burned)");
+  });
+
+  it("Abuse case, refund: cannot refund without burning receipt", async () => {
+    // Setup campaign
+    const maker = anchor.web3.Keypair.generate();
+    const mintKeypair = anchor.web3.Keypair.generate();
+    const mint = mintKeypair.publicKey;
+    const rent = await context.banksClient.getRent();
+    const mintRent = Number(rent.minimumBalance(BigInt(MINT_SIZE)));
+    const contributorAta = getAssociatedTokenAddressSync(mint, payer.publicKey);
+
+    await send(
+      [
+        anchor.web3.SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: maker.publicKey, lamports: anchor.web3.LAMPORTS_PER_SOL }),
+        anchor.web3.SystemProgram.createAccount({ fromPubkey: payer.publicKey, newAccountPubkey: mint, space: MINT_SIZE, lamports: mintRent, programId: TOKEN_PROGRAM_ID }),
+        createInitializeMint2Instruction(mint, 6, payer.publicKey, null),
+        createAssociatedTokenAccountInstruction(payer.publicKey, contributorAta, payer.publicKey, mint),
+        createMintToInstruction(mint, contributorAta, payer.publicKey, 10 * CONTRIBUTION),
+      ],
+      [mintKeypair]
+    );
+
+    const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId);
+    const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()], program.programId);
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+    
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("receipt"), fundraiser.toBuffer(), payer.publicKey.toBuffer()], program.programId);
+    const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, payer.publicKey, false, TOKEN_2022_PROGRAM_ID);
+
+    await send([
+      await program.methods.initialize(new anchor.BN(TARGET), DURATION_DAYS).accountsPartial({
+        maker: maker.publicKey, mintToRaise: mint, fundraiser, vault, systemProgram: anchor.web3.SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      }).instruction(),
+    ], [maker]);
+
+    // Contribute
+    await send([
+      await program.methods.contribute(new anchor.BN(CONTRIBUTION)).accountsPartial({
+        contributor: payer.publicKey, mintToRaise: mint, fundraiser, contributorAccount, contributorAta, vault, receiptMint, contributorReceiptAta
+      }).instruction()
+    ]);
+
+    // Advance time
+    await advanceDays(8n);
+
+    // Sanity check: bypass refund's internal burn CPI by burning manually, leaving balance 0.
+    await send([
+      createBurnInstruction(contributorReceiptAta, receiptMint, payer.publicKey, 1, [], TOKEN_2022_PROGRAM_ID)
+    ]);
+
+    try {
+      await send([
+        await program.methods.refund().accountsPartial({
+          contributor: payer.publicKey, maker: maker.publicKey, mintToRaise: mint, fundraiser, contributorAccount, contributorAta, vault, receiptMint, contributorReceiptAta, token2022Program: TOKEN_2022_PROGRAM_ID, tokenProgram: TOKEN_PROGRAM_ID, systemProgram: anchor.web3.SystemProgram.programId,
+        }).instruction(),
+      ]);
+      assert.fail("Refund should have failed because the receipt token was already burned (balance 0)");
+    } catch (err: any) {
+      const errStr = errorCodeOf(err);
+      // Custom error 1 in SPL token is InsufficientFunds
+      assert.isTrue(
+        errStr.includes("custom error 1") || errStr.toLowerCase().includes("insufficientfunds"),
+        `Expected InsufficientFunds error, got ${errStr}`
+      );
+    }
   });
 });
