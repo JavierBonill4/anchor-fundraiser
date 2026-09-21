@@ -23,6 +23,8 @@ describe("fundraiser", () => {
 
   const fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
 
+  const rewardMint = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("reward"), fundraiser.toBuffer()], program.programId)[0];
+  const contributorRewardAta = getAssociatedTokenAddressSync(rewardMint, provider.publicKey, true);
   const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
 
   const confirm = async (signature: string): Promise<string> => {

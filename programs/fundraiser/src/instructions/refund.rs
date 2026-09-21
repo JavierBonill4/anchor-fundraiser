@@ -1,10 +1,15 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{
+        burn,
+        Burn,
+        transfer, 
+        Mint, 
+        Token, 
+        TokenAccount, 
+        Transfer
+    }
 };
 
 use crate::{
@@ -49,6 +54,15 @@ pub struct Refund<'info> {
     pub vault: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+    #[account(mut, address = fundraiser.reward_mint)]
+    pub reward_mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        associated_token::mint = reward_mint,
+        associated_token::authority = contributor
+    )]
+    pub contributor_reward_ata: Account<'info, TokenAccount>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
 impl<'info> Refund<'info> {
@@ -92,6 +106,18 @@ impl<'info> Refund<'info> {
 
         // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
+
+        // Burn the reward tokens
+        if self.contributor_account.reward_amount > 0 {
+            let burn_accounts = Burn {
+                mint: self.reward_mint.to_account_info(),
+                from: self.contributor_reward_ata.to_account_info(),
+                authority: self.contributor.to_account_info(),
+            };
+
+            let cpi_ctx_burn = CpiContext::new(self.token_program.key(), burn_accounts);
+            burn(cpi_ctx_burn, self.contributor_account.reward_amount)?;
+        }
 
         // Update the fundraiser state by reducing the amount contributed
         self.fundraiser.current_amount -= self.contributor_account.amount;

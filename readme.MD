@@ -490,3 +490,24 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Early-Bird Reward Tokens Feature
+
+### What it does
+Contributors receive a reward SPL token when they contribute. The exchange rate decays as the fundraiser vault fills up.
+
+### How it works
+- `Fundraiser` state was expanded to include `reward_mint` and `reward_bump`.
+- `Contributor` state was expanded to include `reward_amount` to track the total rewards given.
+- In `initialize`, a new PDA mint is created for the rewards.
+- In `contribute`, rewards are calculated using `(contribution * remaining_amount) / target_amount` using `u128` math, and minted to the contributor's reward ATA.
+- In `refund`, exactly `reward_amount` of tokens are burned from the contributor.
+
+### What it costs
+- **Rent**: Slightly larger `Fundraiser` (+33 bytes) and `Contributor` (+8 bytes) accounts. The system also initializes a new SPL token mint account.
+- **Compute**: Added math operations (`checked_mul`, `checked_div` with `u128`) and CPI to the token program for `mint_to` and `burn`.
+
+### How you would attack it
+The most obvious attack vector/abuse case is that a user can contribute, receive the reward token, and then transfer those tokens to another wallet. When they attempt to `refund` after the fundraiser fails, the transaction will fail because the program attempts to burn the exact amount of tokens they originally received from their ATA. This acts as a lock-in mechanism (you can't refund if you sold or moved the rewards). But it could also be considered a nuisance if a user legitimately moved them and then the fundraiser failed, forcing them to move them back in order to successfully trigger their refund. Another vulnerability is that since the decay curve uses `current_amount` *before* the contribution, a single huge contribution early gets the maximum multiplier on the entire chunk, rather than walking down the curve continuously.

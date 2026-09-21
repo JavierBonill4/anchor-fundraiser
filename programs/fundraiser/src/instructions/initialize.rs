@@ -32,6 +32,15 @@ pub struct Initialize<'info> {
         associated_token::authority = fundraiser,
     )]
     pub vault: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = maker,
+        seeds = [b"reward", fundraiser.key().as_ref()],
+        bump,
+        mint::decimals = mint_to_raise.decimals,
+        mint::authority = fundraiser,
+    )]
+    pub reward_mint: Account<'info, Mint>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -62,7 +71,9 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            reward_mint: self.reward_mint.key(),
+            reward_bump: bumps.reward_mint,
         });
         
         Ok(())
