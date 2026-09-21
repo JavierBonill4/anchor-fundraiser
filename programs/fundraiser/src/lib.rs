@@ -42,4 +42,11 @@ pub mod fundraiser {
 
         Ok(())
     }
+
+    pub fn check_milestone(ctx: Context<CheckMilestone>, index: u8) -> Result<()> {
+
+        ctx.accounts.check_milestone(index)?;
+
+        Ok(())
+    }
 }

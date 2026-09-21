@@ -8,12 +8,14 @@ use anchor_spl::token::{
 };
 
 use crate::{
+    instructions::MilestoneReached,
     state::{
         Contributor, 
         Fundraiser
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
+    MILESTONE_COUNT,
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
 };
 
@@ -105,6 +107,28 @@ impl<'info> Contribute<'info> {
         self.fundraiser.current_amount += amount;
 
         self.contributor_account.amount += amount;
+
+        // Funding milestones. `current_amount` is final for this instruction,
+        // so ask the account which quarter marks are satisfied and not yet
+        // fired, and fire every one of them. A contribution can jump past a
+        // mark without landing on it; looping the pending mask handles that,
+        // where three independent `if`s each assuming they run alone would not.
+        let pending = self.fundraiser.milestones_pending();
+        for index in 0..MILESTONE_COUNT {
+            let bit = 1u8 << index;
+            if pending & bit == 0 {
+                continue;
+            }
+
+            self.fundraiser.milestones_fired |= bit;
+
+            emit!(MilestoneReached {
+                fundraiser: self.fundraiser.key(),
+                index,
+                current_amount: self.fundraiser.current_amount,
+                amount_to_raise: self.fundraiser.amount_to_raise,
+            });
+        }
 
         Ok(())
     }
