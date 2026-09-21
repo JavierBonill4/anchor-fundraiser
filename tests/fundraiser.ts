@@ -1,5 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
+import { strict as assert } from "assert";
 import { Fundraiser } from "../target/types/fundraiser";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
@@ -13,9 +14,13 @@ describe("fundraiser", () => {
 
   const maker = anchor.web3.Keypair.generate();
 
+  const bob = anchor.web3.Keypair.generate();
+
   let mint: anchor.web3.PublicKey;
 
   let contributorATA: anchor.web3.PublicKey;
+
+  let bobATA: anchor.web3.PublicKey;
 
   let makerATA: anchor.web3.PublicKey;
 
@@ -24,6 +29,8 @@ describe("fundraiser", () => {
   const fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
 
   const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+
+  const bobContributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), bob.publicKey.toBuffer(),], program.programId)[0];
 
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
@@ -38,15 +45,23 @@ describe("fundraiser", () => {
     const airdrop = await provider.connection.requestAirdrop(maker.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
     console.log("\nAirdropped 1 SOL to maker", airdrop);
 
+    const bobAirdrop = await provider.connection.requestAirdrop(bob.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
+    console.log("Airdropped 1 SOL to Bob", bobAirdrop);
+
     mint = await createMint(provider.connection, wallet.payer, provider.publicKey, provider.publicKey, 6);
     console.log("Mint created", mint.toBase58());
 
     contributorATA = (await getOrCreateAssociatedTokenAccount(provider.connection, wallet.payer, mint, wallet.publicKey)).address;
 
+    bobATA = (await getOrCreateAssociatedTokenAccount(provider.connection, wallet.payer, mint, bob.publicKey)).address;
+
     makerATA = (await getOrCreateAssociatedTokenAccount(provider.connection, wallet.payer, mint, maker.publicKey)).address;
 
     const mintTx = await mintTo(provider.connection, wallet.payer, mint, contributorATA, provider.publicKey, 1_000_000_0);
     console.log("Minted 10 tokens to contributor", mintTx);
+
+    const bobMintTx = await mintTo(provider.connection, wallet.payer, mint, bobATA, provider.publicKey, 1_000_000_0);
+    console.log("Minted 10 tokens to Bob", bobMintTx);
   })
 
   it("Initialize Fundaraiser", async () => {
@@ -75,7 +90,7 @@ describe("fundraiser", () => {
     console.log("Your transaction signature", tx);
   });
 
-  it("Contribute to Fundraiser", async () => {
+  it("Contribute to Fundraiser - increments contributor count on first contribution", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     const tx = await program.methods
@@ -99,8 +114,11 @@ describe("fundraiser", () => {
 
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
+    
+    const fundraiserAccount = await program.account.fundraiser.fetch(fundraiser);
+    assert.equal(fundraiserAccount.contributorCount, 1);
   });
-  it("Contribute to Fundraiser", async () => {
+  it("Contribute to Fundraiser-does not increment contributor count for a repeat contribution", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     const tx = await program.methods
@@ -124,6 +142,9 @@ describe("fundraiser", () => {
 
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
+
+    const fundraiserAccount = await program.account.fundraiser.fetch(fundraiser);
+    assert.equal(fundraiserAccount.contributorCount, 1);
   });
 
   it("Contribute to Fundraiser - Robustness Test", async () => {
@@ -182,7 +203,31 @@ describe("fundraiser", () => {
       console.log(error.msg);
     }
   });
-  
+  it("Contributor count increases for a second unique contributor", async () => {
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    const tx = await program.methods
+    .contribute(new anchor.BN(1000000))
+    .accountsPartial({
+      contributor: bob.publicKey,
+      fundraiser,
+      contributorAccount: bobContributor,
+      contributorAta: bobATA,
+      vault,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .signers([bob])
+    .rpc({
+      skipPreflight: true,
+    })
+    .then(confirm);
+
+    console.log("Bob contributed", tx);
+
+    const fundraiserAccount = await program.account.fundraiser.fetch(fundraiser);
+
+    assert.equal(fundraiserAccount.contributorCount, 2);
+  });
   // A refund is only legal once the window has closed, so a seven day fundraiser
   // must refuse one on the day it opens. The successful refund is covered in
   // tests/time-window-bankrun.ts, which can move the clock past the deadline.
