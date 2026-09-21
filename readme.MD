@@ -41,6 +41,12 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    // ---- underwriting fields (appended for Borsh compatibility) ----
+    pub state: FundraiserState,
+    pub original_shortfall: u64,
+    pub total_underwritten: u64,
+    pub total_outstanding_claims: u64,
+    pub underwriting_deadline: i64,
 }
 ```
 
@@ -490,3 +496,80 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Permissionless Underwriting / Backstop Market
+
+When a fundraiser deadline passes and the target is **not** met, the campaign does not simply die.
+Instead, anyone can provide the missing capital during a 7-day **underwriting phase**, receive a bonding-curve-priced claim, and get repaid by the maker later.
+
+### State Machine
+
+```
+Active ──► Success          (target met, maker claims)
+Active ──► Underwriting     (deadline passed, target missed)
+Underwriting ──► Underwritten  (shortfall fully filled)
+Underwriting ──► Failed         (7-day window expired, contributors can refund)
+Underwritten ──► Settled        (maker repaid all underwriters)
+```
+
+### Flow
+
+1. **`enter_underwriting`** — Anyone can call this after the fundraiser deadline passes and the target was not met. Transitions state to `Underwriting` and records the shortfall.
+
+2. **`underwrite_shortfall`** — Anyone can deposit tokens to cover part or all of the shortfall. Tokens go to the vault. A `UnderwriterPosition` PDA is created per underwriter with a bonding-curve-priced `claim_amount`.
+
+3. **`repay_underwriters`** — The maker deposits enough tokens to cover all outstanding claims. Transitions state to `Settled`.
+
+4. **`claim_underwriting`** — Each underwriter withdraws their claim from the vault. The position is closed and rent returned.
+
+5. **`check_underwriting_status`** — Crank: if the 7-day underwriting window expires without full coverage, transitions to `Failed` so contributors can refund.
+
+### Bonding Curve Pricing
+
+All values in basis points (BPS = 10000):
+
+| Parameter | Value | Meaning |
+| --- | --- | --- |
+| `BASE_PREMIUM_RATE` | 1000 | 10% base premium |
+| `CURVE_SLOPE` | 500 | 5% additional at 100% utilization |
+
+```
+utilization = total_underwritten / original_shortfall
+premium_rate = 1000 + (utilization × 500)
+claim_amount = principal × (10000 + premium_rate) / 10000   (rounds DOWN)
+```
+
+| Utilization | Premium | Claim per 1000 deposited |
+| --- | --- | --- |
+| 0% | 10.0% | 1100 |
+| 50% | 12.5% | 1125 |
+| 100% | 15.0% | 1150 |
+
+### New Account: UnderwriterPosition
+
+```rust
+pub struct UnderwriterPosition {
+    pub fundraiser: Pubkey,      // PDA seeds: ["underwriter", fundraiser, underwriter]
+    pub underwriter: Pubkey,
+    pub principal: u64,          // tokens deposited
+    pub claim_amount: u64,       // principal + premium
+    pub created_at: i64,
+    pub claimed: bool,
+    pub bump: u8,
+}
+```
+
+### New Error Variants
+
+| Error | When |
+| --- | --- |
+| `NotInUnderwritingPhase` | `underwrite_shortfall` called when state is not Underwriting |
+| `UnderwritingExpired` | Underwriting deadline has passed |
+| `ExceedsRemainingShortfall` | Amount exceeds what is still needed |
+| `UnderwritingTooSmall` | Amount is less than 1 whole token |
+| `AlreadyClaimed` | Double-claim prevention |
+| `InsufficientRepayment` | Maker deposited less than total outstanding claims |
+| `NotSettled` | `claim_underwriting` called before maker has settled |
+| `NoShortfall` | Shortfall is already fully covered |

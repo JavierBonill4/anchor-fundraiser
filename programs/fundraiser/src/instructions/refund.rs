@@ -10,7 +10,8 @@ use anchor_spl::token::{
 use crate::{
     state::{
         Contributor, 
-        Fundraiser
+        Fundraiser,
+        FundraiserState,
     }, 
     SECONDS_TO_DAYS
 };
@@ -63,10 +64,19 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::FundraiserNotEnded
         );
 
+        // Allow refund if state is Failed OR if deadline passed and target not met
+        // This provides backward compatibility while supporting the new state machine.
+        let is_failed_state = self.fundraiser.state == FundraiserState::Failed;
+        let deadline_passed_target_missed = self.vault.amount < self.fundraiser.amount_to_raise;
+        
         require!(
-            self.vault.amount < self.fundraiser.amount_to_raise,
+            is_failed_state || deadline_passed_target_missed,
             crate::FundraiserError::TargetMet
         );
+
+        // If we're in Failed state and target was met, that's a contradiction
+        // (should have been Success). If state is Active or Underwriting but
+        // deadline passed and target missed, we allow the refund for backward compat.
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds

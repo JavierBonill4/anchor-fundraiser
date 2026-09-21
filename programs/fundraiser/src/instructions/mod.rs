@@ -2,8 +2,18 @@ pub mod initialize;
 pub mod contribute;
 pub mod checker;
 pub mod refund;
+pub mod enter_underwriting;
+pub mod underwrite_shortfall;
+pub mod repay_underwriters;
+pub mod claim_underwriting;
+pub mod check_underwriting_status;
 
 pub use initialize::*;
 pub use contribute::*;
 pub use checker::*;
 pub use refund::*;
+pub use enter_underwriting::*;
+pub use underwrite_shortfall::*;
+pub use repay_underwriters::*;
+pub use claim_underwriting::*;
+pub use check_underwriting_status::*;

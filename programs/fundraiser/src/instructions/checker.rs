@@ -11,7 +11,7 @@ use anchor_spl::{
 };
 
 use crate::{
-    state::Fundraiser, 
+    state::{Fundraiser, FundraiserState}, 
     FundraiserError
 };
 
@@ -46,13 +46,16 @@ pub struct CheckContributions<'info> {
 }
 
 impl<'info> CheckContributions<'info> {
-    pub fn check_contributions(&self) -> Result<()> {
+    pub fn check_contributions(&mut self) -> Result<()> {
         
         // Check if the target amount has been met
         require!(
             self.vault.amount >= self.fundraiser.amount_to_raise,
             FundraiserError::TargetNotMet
         );
+
+        // Transition state to Success before closing the account
+        self.fundraiser.state = FundraiserState::Success;
 
         // Transfer the funds to the maker
         // CPI to the token program to transfer the funds

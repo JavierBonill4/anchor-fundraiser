@@ -10,7 +10,8 @@ use anchor_spl::token::{
 use crate::{
     state::{
         Contributor, 
-        Fundraiser
+        Fundraiser,
+        FundraiserState,
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
@@ -55,6 +56,12 @@ pub struct Contribute<'info> {
 
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
+
+        // Check that the fundraiser is still accepting contributions.
+        require!(
+            self.fundraiser.state == FundraiserState::Active,
+            FundraiserError::FundraiserEnded
+        );
 
         // Check that the contribution is at least one whole token.
         //

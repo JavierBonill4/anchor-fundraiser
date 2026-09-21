@@ -17,5 +17,26 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    // ---- new errors for underwriting ----
+    #[msg("Fundraiser is not in the underwriting phase")]
+    NotInUnderwritingPhase,
+    #[msg("Underwriting phase has expired")]
+    UnderwritingExpired,
+    #[msg("Amount exceeds remaining shortfall")]
+    ExceedsRemainingShortfall,
+    #[msg("Underwriting amount too small (minimum 1 whole token)")]
+    UnderwritingTooSmall,
+    #[msg("This position has already been claimed")]
+    AlreadyClaimed,
+    #[msg("Insufficient repayment liquidity in vault")]
+    InsufficientRepayment,
+    #[msg("Not the position owner")]
+    NotPositionOwner,
+    #[msg("No shortfall to underwrite")]
+    NoShortfall,
+    #[msg("Arithmetic overflow")]
+    Overflow,
+    #[msg("Fundraiser is not in the settled state")]
+    NotSettled,
 }

@@ -9,7 +9,7 @@ use anchor_spl::{
 };
 
 use crate::{
-    state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE
+    state::{Fundraiser, FundraiserState}, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE
 };
 
 #[derive(Accounts)]
@@ -62,7 +62,13 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            // New underwriting fields
+            state: FundraiserState::Active,
+            original_shortfall: 0,
+            total_underwritten: 0,
+            total_outstanding_claims: 0,
+            underwriting_deadline: 0,
         });
         
         Ok(())
