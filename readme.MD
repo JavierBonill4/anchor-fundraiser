@@ -1,5 +1,30 @@
 # Token Fundraiser
 
+---
+
+## Milestone Feature
+
+### What it does
+
+Tracks progress toward the fundraising target at three checkpoints — 25%, 50%, and 75% of `amount_to_raise`. Each time a contribution pushes `current_amount` past a threshold for the first time, the program sets a bit in `milestone_flags` (a `u8` on the `Fundraiser` account) and emits a `MilestoneReached` event containing the fundraiser address and the threshold in basis points (2500, 5000, or 7500). Milestones are permanent: refunds reduce `current_amount` but never clear the flags.
+
+### How it works
+
+`milestone_flags` lives on the `Fundraiser` state account (bits 0, 1, 2 = 25%, 50%, 75%). After every successful `contribute`, the handler loops over all three thresholds in order. For each threshold whose bit is not yet set, it computes `amount_to_raise * pct / 100` using `checked_mul` / `checked_div`, and if `current_amount >= threshold` it sets the bit and calls `emit!(MilestoneReached { ... })`. Looping over all three in one call handles the skip case: a single large contribution that jumps from 5% to 80% correctly fires both the 25% and 50% events in the same transaction. The flag check (`milestone_flags & bit == 0`) is the idempotency guard — once set, that branch never executes again.
+
+### What it costs
+
+- **Extra account space**: 1 byte added to `Fundraiser` (`milestone_flags: u8`), so rent increases by ~0.000002 SOL per fundraiser.
+- **Extra CU per `contribute`**: three threshold comparisons and up to three `emit!` calls. Each `emit!` is a `sol_log_data` syscall (~100 CU). Worst case (all three milestones crossed in one tx) adds ~300–400 CU — negligible against the transfer CPI cost (~5000 CU).
+
+### How you would attack it
+
+- **Milestone skip via one large contribution**: a whale contributes 80% in one tx, jumping past 25% and 50% without separate events. The loop mitigates this — all crossed thresholds fire in the same tx — but off-chain listeners must handle multiple events in one transaction log.
+- **Refund deflation**: a contributor triggers the 25% event, then refunds, dropping `current_amount` back to 5%. The 25% bit stays set, so the event already fired. If the protocol gave rewards on milestone events (e.g. unlocking funds), a colluding maker and contributor could trigger the event cheaply then refund. This implementation emits events only — no funds are unlocked — so the attack surface is limited to misleading observers.
+- **Dust griefing at threshold**: contribute exactly `threshold - 1`, then `1` in a second tx to fire the event at minimal cost. No defense needed here since milestones are observational only.
+
+---
+
 ## Prerequisites
 
 | Tool | Version |

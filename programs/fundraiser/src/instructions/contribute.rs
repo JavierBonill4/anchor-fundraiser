@@ -9,11 +9,12 @@ use anchor_spl::token::{
 
 use crate::{
     state::{
-        Contributor, 
-        Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
+        Contributor,
+        Fundraiser,
+        MilestoneReached,
+    }, FundraiserError,
+    ANCHOR_DISCRIMINATOR,
+    MAX_CONTRIBUTION_PERCENTAGE,
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
 };
 
@@ -102,9 +103,35 @@ impl<'info> Contribute<'info> {
         transfer(cpi_ctx, amount)?;
 
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        self.fundraiser.current_amount = self.fundraiser.current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::InvalidAmount)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self.contributor_account.amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::InvalidAmount)?;
+
+        // Check all three milestones (25%, 50%, 75%). Loop handles a contribution
+        // that skips multiple thresholds in one tx.
+        let milestones: [(u8, u16, u64); 3] = [
+            (0b001, 2500, 25),
+            (0b010, 5000, 50),
+            (0b100, 7500, 75),
+        ];
+        let key = self.fundraiser.key();
+        for (bit, bps, pct) in milestones {
+            if self.fundraiser.milestone_flags & bit == 0 {
+                let threshold = self.fundraiser.amount_to_raise
+                    .checked_mul(pct)
+                    .ok_or(FundraiserError::InvalidAmount)?
+                    .checked_div(100)
+                    .ok_or(FundraiserError::InvalidAmount)?;
+                if self.fundraiser.current_amount >= threshold {
+                    self.fundraiser.milestone_flags |= bit;
+                    emit!(MilestoneReached { fundraiser: key, milestone_bps: bps });
+                }
+            }
+        }
 
         Ok(())
     }
