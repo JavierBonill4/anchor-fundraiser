@@ -24,7 +24,7 @@ pub mod fundraiser {
 
     pub fn contribute(ctx: Context<Contribute>, amount: u64) -> Result<()> {
 
-        ctx.accounts.contribute(amount)?;
+        ctx.accounts.contribute(amount, &ctx.bumps)?;
 
         Ok(())
     }

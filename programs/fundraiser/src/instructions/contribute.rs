@@ -69,7 +69,7 @@ pub struct Contribute<'info> {
     )]
     pub vault: Account<'info, TokenAccount>,
 
-    // ── Receipt NFT accounts (Token-2022) ────────────────────────────
+    //  Receipt NFT accounts (Token-2022) 
     //
     // Both receipt_mint and contributor_receipt_ata are UncheckedAccounts
     // because they must be created manually in a specific order:
@@ -100,6 +100,7 @@ pub struct Contribute<'info> {
     #[account(mut)]
     pub contributor_receipt_ata: UncheckedAccount<'info>,
 
+    /// CHECK: Validated in CPI
     pub token_2022_program: Program<'info, Token2022>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
@@ -256,7 +257,7 @@ impl<'info> Contribute<'info> {
                 ),
             )?;
 
-            // ── 4. Mint exactly 1 receipt token ────────────────────────
+            //  4. Mint exactly 1 receipt token 
             token_2022_cpi::mint_to(
                 CpiContext::new_with_signer(
                     self.token_2022_program.key(),
