@@ -11,7 +11,7 @@ use crate::{
     state::{
         Contributor, 
         Fundraiser
-    }, FundraiserError, 
+    }, events::MilestoneReached, FundraiserError,
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
@@ -66,9 +66,16 @@ impl<'info> Contribute<'info> {
 
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
+        let max_contribution = self
+            .fundraiser
+            .amount_to_raise
+            .checked_mul(MAX_CONTRIBUTION_PERCENTAGE)
+            .ok_or(FundraiserError::Overflow)?
+            / PERCENTAGE_SCALER;
+
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= max_contribution,
             FundraiserError::ContributionTooBig
         );
 
@@ -81,9 +88,15 @@ impl<'info> Contribute<'info> {
         );
 
         // Check if the maximum contributions per contributor have been reached
+        let contributor_total = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            self.contributor_account.amount <= max_contribution
+                && contributor_total <= max_contribution,
             FundraiserError::MaximumContributionsReached
         );
 
@@ -101,10 +114,35 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Update the fundraiser and contributor accounts with the new amounts.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+        self.contributor_account.amount = contributor_total;
 
-        self.contributor_account.amount += amount;
+        // Milestones run inline because only `contribute` moves the recorded
+        // total upward. The bitmask makes each event fire once.
+        let quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            / self.fundraiser.amount_to_raise;
+        let fundraiser_key = self.fundraiser.key();
+
+        for i in 0..quarters.min(3) {
+            let flag = 1u8 << i;
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+                emit!(MilestoneReached {
+                    fundraiser: fundraiser_key,
+                    quarter: (i + 1) as u8,
+                    amount: self.fundraiser.current_amount,
+                });
+            }
+        }
 
         Ok(())
     }
