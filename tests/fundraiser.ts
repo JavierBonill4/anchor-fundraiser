@@ -1,7 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Fundraiser } from "../target/types/fundraiser";
-import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
+import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, getMint, getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
 
 describe("fundraiser", () => {
@@ -24,6 +24,10 @@ describe("fundraiser", () => {
   const fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
 
   const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+
+  const receiptMint = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("receipt"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+
+  const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, provider.publicKey);
 
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
@@ -86,6 +90,8 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint,
+      contributorReceiptAta,
       tokenProgram: TOKEN_PROGRAM_ID,
     })
     .rpc({
@@ -100,6 +106,30 @@ describe("fundraiser", () => {
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
   });
+
+  // Happy path: the contributor's very first contribution should mint them
+  // exactly one NFT receipt, and the mint's authority should already be
+  // revoked so the supply can never grow past 1.
+  it("NFT Receipt - mints on first contribution", async () => {
+    const receiptBalance = await provider.connection.getTokenAccountBalance(contributorReceiptAta);
+    console.log("\nReceipt ATA balance", receiptBalance.value.amount);
+    if (receiptBalance.value.amount !== "1") {
+      throw new Error(`expected exactly 1 receipt token, got ${receiptBalance.value.amount}`);
+    }
+
+    const mintInfo = await getMint(provider.connection, receiptMint);
+    console.log("Receipt mint decimals", mintInfo.decimals, "supply", mintInfo.supply.toString());
+    if (mintInfo.decimals !== 0) {
+      throw new Error(`expected 0 decimals for a one-of-one receipt, got ${mintInfo.decimals}`);
+    }
+    if (mintInfo.supply !== 1n) {
+      throw new Error(`expected supply of exactly 1, got ${mintInfo.supply}`);
+    }
+    if (mintInfo.mintAuthority !== null) {
+      throw new Error("expected mint authority to be revoked (null) right after minting");
+    }
+  });
+
   it("Contribute to Fundraiser", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
@@ -110,6 +140,8 @@ describe("fundraiser", () => {
       fundraiser,
       contributorAccount: contributor,
       contributorAta: contributorATA,
+      receiptMint,
+      contributorReceiptAta,
       vault,
       tokenProgram: TOKEN_PROGRAM_ID,
     })
@@ -126,6 +158,36 @@ describe("fundraiser", () => {
     console.log("Contributor balance", contributorAccount.amount.toString());
   });
 
+  // Boundary: a second contribution from the same wallet must NOT mint a
+  // second receipt. This also proves `has_receipt` is doing real work — since
+  // the mint authority was already revoked after the first contribution, a
+  // naive re-mint attempt here would fail the whole transaction, not just
+  // silently no-op. Without the `has_receipt` guard in contribute.rs, this
+  // test fails: the second contribution itself would be rejected outright.
+  it("NFT Receipt - not minted again on a second contribution", async () => {
+    // Assert the contribution itself actually landed first — otherwise a
+    // silent whole-transaction failure could leave the receipt balance
+    // unchanged for the wrong reason and this test would pass regardless.
+    let contributorAccount = await program.account.contributor.fetch(contributor);
+    if (contributorAccount.amount.toString() !== "2000000") {
+      throw new Error(
+        `expected the contributor's running total to reflect two contributions (2000000), got ${contributorAccount.amount.toString()}`
+      );
+    }
+
+    const receiptBalance = await provider.connection.getTokenAccountBalance(contributorReceiptAta);
+    console.log("\nReceipt ATA balance after 2nd contribution", receiptBalance.value.amount);
+    if (receiptBalance.value.amount !== "1") {
+      throw new Error(`expected receipt balance to stay at 1, got ${receiptBalance.value.amount}`);
+    }
+
+    const mintInfo = await getMint(provider.connection, receiptMint);
+    console.log("Receipt mint supply after 2nd contribution", mintInfo.supply.toString());
+    if (mintInfo.supply !== 1n) {
+      throw new Error(`expected receipt supply to stay at 1, got ${mintInfo.supply}`);
+    }
+  });
+
   it("Contribute to Fundraiser - Robustness Test", async () => {
     try {
       const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
@@ -138,6 +200,8 @@ describe("fundraiser", () => {
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,
+        receiptMint,
+        contributorReceiptAta,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .rpc({
@@ -208,6 +272,44 @@ describe("fundraiser", () => {
     } catch (error) {
       console.log("\nRefund refused while the fundraiser is still running");
       console.log(error.error?.errorCode?.code ?? error.message);
+    }
+  });
+
+  // Abuse: try to sneak an unrelated mint into the receipt slot instead of
+  // the real PDA — e.g. hoping to redirect the "proof of donation" to a
+  // mint the attacker controls. Anchor's own `seeds = [...]` constraint on
+  // `receipt_mint` should reject this before the handler body ever runs.
+  // Without the receipt feature these accounts don't exist at all, so this
+  // test — and the specific ConstraintSeeds rejection it checks for — has
+  // nothing to run against.
+  it("NFT Receipt - abuse: rejects a substituted mint account", async () => {
+    const fakeMint = anchor.web3.Keypair.generate().publicKey;
+    const fakeReceiptAta = getAssociatedTokenAddressSync(fakeMint, provider.publicKey);
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    try {
+      await program.methods
+      .contribute(new anchor.BN(1000000))
+      .accountsPartial({
+        contributor: provider.publicKey,
+        fundraiser,
+        contributorAccount: contributor,
+        contributorAta: contributorATA,
+        vault,
+        receiptMint: fakeMint,
+        contributorReceiptAta: fakeReceiptAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc()
+      .then(confirm);
+
+      throw new Error("expected the substituted receipt mint to be rejected");
+    } catch (error) {
+      const code = error.error?.errorCode?.code ?? error.message;
+      console.log("\nSubstituted receipt mint correctly rejected:", code);
+      if (code !== "ConstraintSeeds") {
+        throw new Error(`expected ConstraintSeeds, got ${code}`);
+      }
     }
   });
 });

@@ -10,6 +10,7 @@ import {
   createAssociatedTokenAccountInstruction,
   createInitializeMint2Instruction,
   createMintToInstruction,
+  createTransferInstruction,
   getAssociatedTokenAddressSync,
   unpackAccount,
 } from "@solana/spl-token";
@@ -179,6 +180,11 @@ describe("fundraiser — the window closes (bankrun)", () => {
       [Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
       program.programId
     );
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
+      program.programId
+    );
+    const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, payer.publicKey);
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await send(
@@ -209,6 +215,8 @@ describe("fundraiser — the window closes (bankrun)", () => {
           contributorAccount,
           contributorAta,
           vault,
+          receiptMint,
+          contributorReceiptAta,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
@@ -263,6 +271,206 @@ describe("fundraiser — the window closes (bankrun)", () => {
       await tokenBalance(contributorAta),
       BigInt(10 * CONTRIBUTION),
       "the contributor should have every token back"
+    );
+  });
+
+  // Sets up a fresh campaign, contributes once, and returns everything a
+  // refund test needs — shared by the two receipt tests below so neither
+  // has to repeat the full initialize+contribute dance.
+  const setUpCampaignWithOneContribution = async () => {
+    const maker = anchor.web3.Keypair.generate();
+    const mintKeypair = anchor.web3.Keypair.generate();
+    const mint = mintKeypair.publicKey;
+
+    const rent = await context.banksClient.getRent();
+    const mintRent = Number(rent.minimumBalance(BigInt(MINT_SIZE)));
+
+    const contributorAta = getAssociatedTokenAddressSync(mint, payer.publicKey);
+
+    await send(
+      [
+        anchor.web3.SystemProgram.transfer({
+          fromPubkey: payer.publicKey,
+          toPubkey: maker.publicKey,
+          lamports: anchor.web3.LAMPORTS_PER_SOL,
+        }),
+        anchor.web3.SystemProgram.createAccount({
+          fromPubkey: payer.publicKey,
+          newAccountPubkey: mint,
+          space: MINT_SIZE,
+          lamports: mintRent,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+        createInitializeMint2Instruction(mint, 6, payer.publicKey, null),
+        createAssociatedTokenAccountInstruction(payer.publicKey, contributorAta, payer.publicKey, mint),
+        createMintToInstruction(mint, contributorAta, payer.publicKey, 10 * CONTRIBUTION),
+      ],
+      [mintKeypair]
+    );
+
+    const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
+      program.programId
+    );
+    const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
+      program.programId
+    );
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
+      program.programId
+    );
+    const contributorReceiptAta = getAssociatedTokenAddressSync(receiptMint, payer.publicKey);
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    await send(
+      [
+        await program.methods
+          .initialize(new anchor.BN(TARGET), DURATION_DAYS)
+          .accountsPartial({
+            maker: maker.publicKey,
+            mintToRaise: mint,
+            fundraiser,
+            vault,
+            systemProgram: anchor.web3.SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          })
+          .instruction(),
+      ],
+      [maker]
+    );
+
+    // This first contribution is what mints the receipt.
+    await send([
+      await program.methods
+        .contribute(new anchor.BN(CONTRIBUTION))
+        .accountsPartial({
+          contributor: payer.publicKey,
+          mintToRaise: mint,
+          fundraiser,
+          contributorAccount,
+          contributorAta,
+          vault,
+          receiptMint,
+          contributorReceiptAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        })
+        .instruction(),
+    ]);
+
+    return { maker, mint, fundraiser, contributorAccount, contributorAta, receiptMint, contributorReceiptAta, vault };
+  };
+
+  it("burns the receipt and closes its ATA on a normal refund", async () => {
+    const { maker, mint, fundraiser, contributorAccount, contributorAta, receiptMint, contributorReceiptAta, vault } =
+      await setUpCampaignWithOneContribution();
+
+    assert.strictEqual(await tokenBalance(contributorReceiptAta), 1n, "the receipt should exist before refunding");
+
+    // Past the deadline, target missed.
+    await advanceDays(8n);
+
+    await send([
+      await program.methods
+        .refund()
+        .accountsPartial({
+          contributor: payer.publicKey,
+          maker: maker.publicKey,
+          mintToRaise: mint,
+          fundraiser,
+          contributorAccount,
+          contributorAta,
+          vault,
+          receiptMint,
+          contributorReceiptAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .instruction(),
+    ]);
+
+    assert.strictEqual(
+      await tokenBalance(contributorAta),
+      BigInt(10 * CONTRIBUTION),
+      "the contributor should have every raised token back"
+    );
+
+    const closedAccount = await context.banksClient.getAccount(contributorReceiptAta);
+    assert.isNull(closedAccount, "the receipt ATA should be closed, and its rent reclaimed, after a normal refund");
+  });
+
+  it("still allows a refund even if the receipt was moved elsewhere first", async () => {
+    const { maker, mint, fundraiser, contributorAccount, contributorAta, receiptMint, contributorReceiptAta, vault } =
+      await setUpCampaignWithOneContribution();
+
+    // Send the receipt to someone else's wallet before refunding — the
+    // exact move the trap warns about. A contributor who does this should
+    // not be able to lock their own funds behind an NFT they no longer hold.
+    const otherWallet = anchor.web3.Keypair.generate();
+    const otherWalletReceiptAta = getAssociatedTokenAddressSync(receiptMint, otherWallet.publicKey);
+
+    await send([
+      anchor.web3.SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: otherWallet.publicKey,
+        lamports: anchor.web3.LAMPORTS_PER_SOL, // funds the rent for their new ATA
+      }),
+      createAssociatedTokenAccountInstruction(payer.publicKey, otherWalletReceiptAta, otherWallet.publicKey, receiptMint),
+      createTransferInstruction(contributorReceiptAta, otherWalletReceiptAta, payer.publicKey, 1),
+    ]);
+
+    assert.strictEqual(
+      await tokenBalance(contributorReceiptAta),
+      0n,
+      "the receipt should have left the contributor's own ATA"
+    );
+
+    // Past the deadline, target missed.
+    await advanceDays(8n);
+
+    // This is the actual fix under test: refund must succeed even though
+    // the receipt is gone, not revert because the burn has nothing to burn.
+    try {
+      await send([
+        await program.methods
+          .refund()
+          .accountsPartial({
+            contributor: payer.publicKey,
+            maker: maker.publicKey,
+            mintToRaise: mint,
+            fundraiser,
+            contributorAccount,
+            contributorAta,
+            vault,
+            receiptMint,
+            contributorReceiptAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .instruction(),
+      ]);
+    } catch (err) {
+      assert.fail(
+        `a refund must still succeed without the receipt, but it failed with ${errorCodeOf(err)}`
+      );
+    }
+
+    assert.strictEqual(
+      await tokenBalance(contributorAta),
+      BigInt(10 * CONTRIBUTION),
+      "the contributor should still get their money back"
+    );
+
+    // The documented trade-off: the receipt survives, untouched, wherever
+    // it was sent — because making its burn mandatory would have meant
+    // holding the contributor's own refund hostage instead.
+    assert.strictEqual(
+      await tokenBalance(otherWalletReceiptAta),
+      1n,
+      "the receipt should still exist in whichever wallet it was sent to"
     );
   });
 });
