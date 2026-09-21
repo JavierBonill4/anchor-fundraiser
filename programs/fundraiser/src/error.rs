@@ -17,5 +17,16 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    // ---- feat/contribution-receipts ----
+    #[msg("This contributor has already claimed their receipt")]
+    ReceiptAlreadyClaimed,
+    #[msg("No contribution record exists for this contributor — nothing to receipt")]
+    ContributorMissing,
+    #[msg("This contributor never contributed a whole token, so no receipt is due")]
+    NothingToReceipt,
+    #[msg("The receipt counter overflowed — this cannot happen while u64 exists")]
+    ReceiptOverflow,
+    #[msg("Nothing to refund — this contributor never put in a whole token")]
+    NothingToRefund
 }
