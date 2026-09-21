@@ -1,21 +1,29 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
+    Mint,
+    transfer,
+    Token,
+    TokenAccount,
     Transfer
 };
 
 use crate::{
     state::{
-        Contributor, 
+        Contributor,
         Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    },
+    FundraiserError,
+    ANCHOR_DISCRIMINATOR,
+    MAX_CONTRIBUTION_PERCENTAGE,
+    PERCENTAGE_SCALER,
+    SECONDS_TO_DAYS,
 };
+
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub milestone: u8,
+}
 
 #[derive(Accounts)]
 pub struct Contribute<'info> {
@@ -56,55 +64,85 @@ pub struct Contribute<'info> {
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
 
-        // Check that the contribution is at least one whole token.
-        //
-        // The previous form was `1_u8.pow(decimals)`, and 1 raised to any power is 1
-        // — so the check only ever rejected a contribution of a single raw unit.
         let one_token = 10u64
             .checked_pow(self.mint_to_raise.decimals as u32)
             .ok_or(FundraiserError::ContributionTooSmall)?;
 
-        require!(amount >= one_token, FundraiserError::ContributionTooSmall);
-
-        // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount >= one_token,
+            FundraiserError::ContributionTooSmall
+        );
+
+        let max_contribution = self
+            .fundraiser
+            .amount_to_raise
+            .checked_mul(MAX_CONTRIBUTION_PERCENTAGE)
+            .ok_or(FundraiserError::Overflow)?
+            / PERCENTAGE_SCALER;
+
+        require!(
+            amount <= max_contribution,
             FundraiserError::ContributionTooBig
         );
 
-        // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
+
         require!(
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 < self.fundraiser.duration as i64,
-            crate::FundraiserError::FundraiserEnded
+            FundraiserError::FundraiserEnded
         );
 
-        // Check if the maximum contributions per contributor have been reached
+        let new_contributor_amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            new_contributor_amount <= max_contribution,
             FundraiserError::MaximumContributionsReached
         );
 
-        // Transfer the funds from the contributor to the vault.
-        // As of Anchor 1.0 a CpiContext takes the program's *address*, not its
-        // AccountInfo.
+        let new_current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
         let cpi_accounts = Transfer {
             from: self.contributor_ata.to_account_info(),
             to: self.vault.to_account_info(),
             authority: self.contributor.to_account_info(),
         };
 
-        let cpi_ctx = CpiContext::new(self.token_program.key(), cpi_accounts);
+        let cpi_ctx =
+            CpiContext::new(self.token_program.key(), cpi_accounts);
 
-        // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        self.fundraiser.current_amount = new_current_amount;
+        self.contributor_account.amount = new_contributor_amount;
 
-        self.contributor_account.amount += amount;
+        let quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            / self.fundraiser.amount_to_raise;
+
+        for i in 0..quarters.min(3) {
+            let flag = 1u8 << i;
+
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    milestone: ((i + 1) * 25) as u8,
+                });
+            }
+        }
 
         Ok(())
     }
