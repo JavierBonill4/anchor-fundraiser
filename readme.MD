@@ -490,3 +490,65 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+# feat/contribution-receipts
+
+## What it does
+
+Every campaign mints its own **badge token** — zero decimals, one per person. A wallet that has contributed a whole token or more can receive exactly one badge for that campaign, ever, and anyone can hand it to them: the `claim_receipt` instruction is permissionless, so a front end (or a generous stranger) can pay the fees and the badge still lands in the contributor's own token account.
+
+The badge is a verifiable on-chain receipt: "this address backed this campaign while it was live". It does not depend on the maker's honesty, on an indexer, or on the badge surviving the campaign — badges are never frozen and never retracted, so a refunded backer keeps theirs.
+
+## Why (the design, written before the code)
+
+A campaign at 60% looks nothing like one at 10%, and today nothing on chain distinguishes the backers of a campaign that succeeded from the backers of one that quietly died. Governance gates, allowlists and airdrop eligibility all want exactly that fact, and every one of them currently has to trust an off-chain database. A badge per backer is that fact as a token.
+
+A dishonest user wants two things: **many badges** (farm the reward) and **someone else's badge** (steal the reward). Both are shut on chain, not by convention: the supply is minted only by the fundraiser PDA, only from `initialize` and `claim_receipt`, and `claim_receipt` will only mint to an address whose `Contributor` record proves a live, positive contribution — with a persistent `claimed` flag that makes the second badge impossible even across a refund. The deliberately chosen trade-off, stated up front: the badge is *reputation*, not *equity*. It is never a claim on the pot, so minting it can never drain the vault.
+
+## How it works
+
+**State added (all appended — Borsh never shifts an existing byte):**
+
+- `Fundraiser.reward_mint: Pubkey`, `Fundraiser.receipts_minted: u64` — the campaign's badge mint and its running supply (+64 bytes on the account).
+- `Contributor.claimed: bool` — set once, never reset (+1 byte).
+
+**Where it fires:** `initialize` now also creates the badge mint — PDA `[b"reward-mint", fundraiser]`, decimals 0, the fundraiser PDA as its only mint authority — and gives the maker supply 1, so a one-person campaign can still resolve completely. `claim_receipt` is a new instruction: it takes the contributor's `Contributor` record (as `Option`, so a never-contributor hits a named error instead of a deserialization failure), requires `amount > 0`, requires `!claimed`, sets `claimed`, then CPIs `mint_to(1)` with the fundraiser PDA as signer. It emits `ReceiptClaimed` so a front end can index claims without polling.
+
+**One existing instruction changed behaviour:** `refund` used to `close` the `Contributor` record. It now empties it (`amount = 0`) and keeps it, because a record that dies takes its `claimed` flag with it — and a dead flag means a refunded wallet could re-contribute and mint a second badge. A second refund now fails with `NothingToRefund` instead of transferring zero tokens.
+
+**New errors:** `ReceiptAlreadyClaimed`, `ContributorMissing`, `NothingToReceipt`, `ReceiptOverflow`, `NothingToRefund`.
+
+## What it costs
+
+| Item | Who pays | Cost |
+| --- | --- | --- |
+| Badge mint (82 B) | maker, at `initialize` | ≈ 0.00146 SOL rent, once |
+| Maker's badge ATA (165 B) | maker, at `initialize` | ≈ 0.00204 SOL rent, once |
+| `Fundraiser` +64 B | maker, at `initialize` | ≈ 0.00045 SOL extra rent, once |
+| Contributor's badge ATA | the claim's `payer` (whoever runs the crank) | ≈ 0.00204 SOL rent, once per claimer |
+| `Contributor` +1 B | the contributor, on first `contribute` | ≈ 7_000 lamports extra rent |
+| `claim_receipt` compute | — | ≈ 47k CU of the 200k limit, mostly the `init_if_needed` creations and the mint CPI |
+
+No instruction gained a *required* account that existing clients were not already resolving: the badge mint and the maker's badge ATA are seeds-derivable from the fundraiser, and the original four instructions keep their exact `accountsPartial` surface — which is why the shipped tests run unmodified.
+
+## How I would attack it
+
+- **Claim, then refund.** Contribute, claim the badge, then take the money back before the window closes. You keep the badge *and* the money. This is the sharpest edge in the design and it is intentional: the badge says you backed the campaign, not that your money is still there. Anything that wanted badges to mean locked capital would need a lockup this program does not have. A front end should read the vault, not the badges, for live backing.
+- **The maker's free badge.** The maker gets supply 1 at `initialize` and can hold it without ever contributing. An attacker could wear a "backer" badge for their own zero-contribution campaign. The tell is on chain: total supply 2 on a campaign with one real contributor means one of them is the maker.
+- **Badge-supply inflation via record recycling** — the attack the refund change exists to close. Refund used to delete the record; a deleted record forgets `claimed`, and a re-contributed wallet would mint again. The record now outlives the refund and the window never reopens, so the loop has no entrance. What remains is trust in the code shape: `mint_to` appears exactly twice in the program, both behind the fundraiser PDA's seeds. If a third appears, this section is a lie.
+- **Griefing the payer.** Anyone can call `claim_receipt` for anyone, which means anyone can spend their own SOL to create your badge ATA (and fail, if you have no record). It costs the griefer money and mints nothing, but it is spam surface — a production deployment would gate the crank behind its own policy.
+- **Freeze authority exists.** The badge mint's freeze authority is the fundraiser PDA. No instruction freezes anything today, but the authority's existence means a future upgrade could. Governance accepting these badges should know that.
+
+## Testing
+
+`anchor test` — the 11 shipped tests still pass unchanged, plus nine new ones in `tests/contribution-receipts.ts` and `tests/receipts-bankrun.ts`:
+
+- **Happy path** — a real contribution produces exactly one badge, bumps the counter, sets the flag, and emits a `ReceiptClaimed` event that decodes against the IDL with the right fields.
+- **Boundary** — a wallet with no record gets `NothingToReceipt` and leaves nothing on chain; the same wallet one contribution later gets the badge. (The trigger is the record's liveness, and the 10% per-contribution cap makes crossing two marks in one contribution impossible.)
+- **Abuse** — a second claim fails with `ReceiptAlreadyClaimed` and changes nothing; claiming as a non-contributor fails with `NothingToReceipt` and redirects nothing; pointing the instruction at a foreign fundraiser fails a seeds/`has_one` constraint and mints nothing.
+- **Supply discipline** — with two contributors claimed, the badge mint's total supply is exactly 3 (two + the maker's init badge).
+- **Refund interplay (bankrun, clock moved)** — the `claimed` flag survives a refund; a refunded wallet cannot re-contribute (the window never reopens); a refund-before-claim leaves nothing to receipt; a second refund fails with `NothingToRefund` while the contributor still ends up whole.
+
+With the body of `claim_receipt` stubbed out to `return Ok(())`, seven of these go red — the suite fails if the feature is deleted.
