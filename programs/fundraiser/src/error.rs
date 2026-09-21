@@ -17,5 +17,19 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("The winner has already been drawn")]
+    AlreadyDrawn,
+    #[msg("The winner has not been drawn yet")]
+    NotDrawn,
+    #[msg("No tickets were issued, so there is nothing to draw from")]
+    NoTicketsIssued,
+    #[msg("This contributor does not hold the winning ticket")]
+    NotWinningTicket,
+    #[msg("The SlotHashes sysvar could not be read")]
+    SlotHashUnavailable,
+    #[msg("Ticket ranges must stay contiguous. Someone else entered after your last contribution")]
+    NonContiguousTickets,
+    #[msg("Arithmetic overflow")]
+    MathOverflow,
 }

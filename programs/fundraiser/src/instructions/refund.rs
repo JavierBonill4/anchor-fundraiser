@@ -53,6 +53,12 @@ pub struct Refund<'info> {
 
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
+        // A settled campaign is not refundable. The Fundraiser account used to be
+        // closed on settlement, which enforced this for free; it has to survive now.
+        // The tally check below happens to cover it too, because settlement does not
+        // decrement current_amount — but that is an implementation detail of
+        // settlement, and this states the rule.
+        require!(!self.fundraiser.drawn, crate::FundraiserError::AlreadyDrawn);
 
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
@@ -63,38 +69,39 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::FundraiserNotEnded
         );
 
+        // The program's own tally, not the vault balance: anyone can transfer into
+        // the vault, and using it here would let a stranger block every refund.
         require!(
-            self.vault.amount < self.fundraiser.amount_to_raise,
+            self.fundraiser.current_amount < self.fundraiser.amount_to_raise,
             crate::FundraiserError::TargetMet
         );
 
-        // Transfer the funds back to the contributor
-        // CPI to the token program to transfer the funds
-        // As of Anchor 1.0 a CpiContext takes the program's address, not its AccountInfo.
         let cpi_program = self.token_program.key();
 
-        // Transfer the funds from the vault to the contributor
         let cpi_accounts = Transfer {
             from: self.vault.to_account_info(),
             to: self.contributor_ata.to_account_info(),
             authority: self.fundraiser.to_account_info(),
         };
 
-        // Signer seeds to sign the CPI on behalf of the fundraiser account
         let signer_seeds: [&[&[u8]]; 1] = [&[
             b"fundraiser".as_ref(),
             self.maker.to_account_info().key.as_ref(),
             &[self.fundraiser.bump],
         ]];
 
-        // CPI context with signer since the fundraiser account is a PDA
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
 
-        // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        // `total_tickets` is deliberately left alone: un-issuing a range would leave
+        // a gap no live account could prove ownership of. Refunds only happen on a
+        // campaign that never drew, so the gaps are never drawn from.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(crate::FundraiserError::MathOverflow)?;
 
         Ok(())
     }

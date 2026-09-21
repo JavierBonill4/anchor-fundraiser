@@ -29,9 +29,19 @@ pub mod fundraiser {
         Ok(())
     }
 
+    /// Settles a successful campaign and draws the winning ticket in the same
+    /// breath.
     pub fn check_contributions(ctx: Context<CheckContributions>) -> Result<()> {
 
         ctx.accounts.check_contributions()?;
+
+        Ok(())
+    }
+
+    /// The holder of the winning ticket collects the overshoot.
+    pub fn claim_prize(ctx: Context<ClaimPrize>) -> Result<()> {
+
+        ctx.accounts.claim_prize()?;
 
         Ok(())
     }

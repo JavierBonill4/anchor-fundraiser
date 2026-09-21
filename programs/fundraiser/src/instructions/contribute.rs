@@ -1,20 +1,10 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    state::{Contributor, Fundraiser},
+    FundraiserError, ANCHOR_DISCRIMINATOR, MAX_CONTRIBUTION_PERCENTAGE, PERCENTAGE_SCALER,
+    SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -55,6 +45,9 @@ pub struct Contribute<'info> {
 
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
+        // No tickets after the draw: they could never win, and the money would
+        // silently inflate the prize the already-decided winner collects.
+        require!(!self.fundraiser.drawn, FundraiserError::AlreadyDrawn);
 
         // Check that the contribution is at least one whole token.
         //
@@ -66,9 +59,18 @@ impl<'info> Contribute<'info> {
 
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
+        // The per-contributor ceiling, computed once.
+        let max_contribution = self
+            .fundraiser
+            .amount_to_raise
+            .checked_mul(MAX_CONTRIBUTION_PERCENTAGE)
+            .ok_or(FundraiserError::MathOverflow)?
+            .checked_div(PERCENTAGE_SCALER)
+            .ok_or(FundraiserError::MathOverflow)?;
+
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= max_contribution,
             FundraiserError::ContributionTooBig
         );
 
@@ -81,9 +83,14 @@ impl<'info> Contribute<'info> {
         );
 
         // Check if the maximum contributions per contributor have been reached
+        let contributor_total = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::MathOverflow)?;
+
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            contributor_total <= max_contribution,
             FundraiserError::MaximumContributionsReached
         );
 
@@ -101,10 +108,35 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // One ticket per raw token, as a contiguous range. `total_tickets` is both
+        // the count and the cursor the next range starts at. It is kept separate
+        // from `current_amount` because `refund` decrements that one, and tickets
+        // are never un-issued.
+        let ticket_start = self.fundraiser.total_tickets;
+        let ticket_end = ticket_start
+            .checked_add(amount)
+            .ok_or(FundraiserError::MathOverflow)?;
 
-        self.contributor_account.amount += amount;
+        if self.contributor_account.amount == 0 {
+            self.contributor_account.ticket_start = ticket_start;
+        } else {
+            // A repeat contribution can only extend the range, and only while it is
+            // still the last one handed out. Overwriting would orphan the earlier
+            // tickets and the draw could land on a number nobody could claim.
+            require!(
+                self.contributor_account.ticket_end == ticket_start,
+                FundraiserError::NonContiguousTickets
+            );
+        }
+        self.contributor_account.ticket_end = ticket_end;
+
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::MathOverflow)?;
+        self.fundraiser.total_tickets = ticket_end;
+        self.contributor_account.amount = contributor_total;
 
         Ok(())
     }

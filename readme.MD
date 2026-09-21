@@ -26,6 +26,312 @@ In this example, a user will be able to create a fundraiser account, where he wi
 
 ---
 
+# The lottery
+
+## What it does
+
+Backing a campaign buys raffle tickets, one per raw token, and if the campaign
+succeeds one ticket wins the money raised above the target.
+
+The maker is paid exactly the amount they asked to raise — never more. Whatever
+came in above the target is the prize, so the lottery is funded by money the
+maker was never owed, and no backer is worse off than under the original
+program.
+
+## How it works
+
+### State
+
+Appended to `Fundraiser` (appended, never inserted — Borsh reads by position):
+
+| field | type | set by |
+| --- | --- | --- |
+| `total_tickets` | `u64` | `contribute`, running total and allocation cursor |
+| `winning_ticket` | `u64` | `check_contributions` |
+| `drawn` | `bool` | `check_contributions`, fires once |
+
+Appended to `Contributor`:
+
+| field | type | meaning |
+| --- | --- | --- |
+| `ticket_start` | `u64` | first ticket number owned |
+| `ticket_end` | `u64` | one past the last — the range is half open |
+
+`total_tickets` is kept separate from `current_amount` even though the two hold
+the same number today. `refund` decrements `current_amount`; tickets must not be
+un-issued, because that would punch holes in the numbering that no account could
+ever prove ownership of.
+
+### Why ranges
+
+A Solana program cannot enumerate accounts. There is no way to loop over every
+`Contributor` PDA and pick one, and holding an entrant list on `Fundraiser`
+would mean reallocating the account on every contribution.
+
+Ranges invert the search. Each contribution takes the next contiguous block of
+ticket numbers, so the program only has to store one running counter and two
+numbers per backer. The draw picks a number and stops; the winner comes forward
+with their own `Contributor` account and the program checks the number falls
+inside it. The program never learns who won.
+
+A repeat contribution can only *extend* a range, and only while it is still the
+last one handed out. Overwriting it would orphan the earlier tickets and the
+draw could land on a number nobody could claim, so a non-contiguous top-up is
+rejected with `NonContiguousTickets` and the backer keeps what they already
+bought.
+
+### Where it fires
+
+Inline in `check_contributions`, plus one new instruction.
+
+`check_contributions()` — maker only, unchanged signature and trigger. It now
+also rejects a second call (`AlreadyDrawn`), requires at least one ticket
+(`NoTicketsIssued`), records `winning_ticket`, and pays the maker
+`amount_to_raise` instead of the whole vault.
+
+`claim_prize()` — new. The holder of the winning ticket passes their own
+`Contributor` account; the program checks
+`ticket_start <= winning_ticket < ticket_end` and moves the remaining vault
+balance to them.
+
+**One behaviour change worth flagging.** `check_contributions` used to close the
+`Fundraiser` account. It cannot any more: the winning number has to survive
+until someone claims, and the PDA is the vault's authority. `claim_prize` closes
+it instead, so the maker still gets the rent back, just one step later.
+
+**Two guards the original program got for free.** `check_contributions` used to
+close the `Fundraiser` account, and that closure was quietly doing two jobs
+nobody had to name: it made a post-settlement `contribute` impossible, and it
+made a post-settlement `refund` impossible. The account has to survive now, so
+both are written out explicitly.
+
+- `contribute` refuses once `drawn` is set. This is what the closure used to do
+  implicitly — a missing `Fundraiser` account failed the instruction — so the
+  behaviour is unchanged, only the error is now a named one. Without it, tickets
+  bought after the draw could never win and the money would silently inflate the
+  prize the already-decided winner collects.
+- `refund` refuses once `drawn` is set. Settlement leaves the vault holding only
+  the prize, which is below the target — and "below the target" was exactly what
+  `refund` tested, so before the tally change every contributor could have
+  drained the prize one refund at a time once the deadline passed. Reading
+  `current_amount` closes that path on its own, since settlement does not
+  decrement it, but that is a property of how settlement happens to be written.
+  The flag states the rule directly: a settled campaign is not refundable.
+
+**Success and failure are now decided by `current_amount`, not the vault
+balance.** The vault is an ordinary token account that anyone can transfer into.
+Settling on the balance let a maker top up a short campaign and be paid the full
+target out of real contributions; the mirror case let a stranger push a failed
+campaign's vault over the line and block every refund. Both gates read the
+program's own tally instead — the number `contribute` and `refund` actually
+maintain.
+
+### The draw
+
+```
+slot_hash = SlotHashes[0]                   // newest completed slot, bytes 16..48
+entropy   = u64::from_le_bytes(slot_hash[0..8])
+winner    = entropy % total_tickets
+```
+
+The slot hash is the entropy. It is the only value available on chain that is
+unpredictable while contributions are still open, which is the property that
+matters most here: a backer who could compute the winning number before
+contributing could then choose an amount that puts their own range around it.
+Find `X` such that `entropy % (total + X)` lands in `[total, total + X)` — the
+search is cheap, so any scheme whose entropy is fixed before the ticket set is
+frozen hands the campaign to whoever notices.
+
+The slot hash closes that. It does not close the other end of the problem, and
+the attack section below says so plainly.
+
+The sysvar is read as raw bytes and pinned by address: it is about 20 KB, so
+deserializing it properly would cost more compute than the rest of the
+instruction put together. The hash is already a uniform digest, so it is used
+directly rather than run through sha256 again.
+
+## What it costs
+
+### Rent
+
+Rent-exempt minimum is `(128 + bytes) * 6960` lamports.
+
+| account | before | after | delta |
+| --- | --- | --- | --- |
+| `Fundraiser` | 98 B — 0.001573 SOL | 115 B — 0.001691 SOL | **+0.000118 SOL**, once per campaign |
+| `Contributor` | 16 B — 0.001002 SOL | 32 B — 0.001114 SOL | **+0.000112 SOL**, per backer |
+
+A campaign with 100 backers pays about 0.0113 SOL more than before. No new
+accounts are created: the feature rides entirely on accounts the original
+program already opened.
+
+### Compute
+
+Measured on `solana-bankrun` against the built program. Ranges cover the cheap
+path (account already exists) and the expensive one (an associated token account
+is created inside the instruction).
+
+| instruction | CU |
+| --- | --- |
+| `initialize` | 34,817 – 46,817 |
+| `contribute` | 24,433 – 43,560 |
+| `check_contributions` | 18,062 – 72,799 |
+| `claim_prize` | 18,991 – 32,433 |
+| `refund` | 25,281 |
+
+For reference the unmodified program used 39,100 CU for `initialize` and 26,732
+for `contribute`, so ticket allocation is lost in the noise — it is two `u64`
+writes and a comparison. The draw itself is a 32 byte copy out of the sysvar and
+one modulo.
+
+## How you would attack it
+
+### 1. The maker can re-roll by not settling — this one is real and unfixed
+
+`check_contributions` is maker-only. At the moment the maker builds the
+transaction they can already read the slot hash the program is about to use, so
+they can compute the winner before signing. If they do not like the answer they
+simply do not send. Four hundred milliseconds later the newest slot hash has
+changed and they can compute again. A transaction that is never broadcast costs
+nothing, and there is no deadline forcing settlement.
+
+This is not limited to winning it themselves. `total_tickets` is frozen once the
+window closes, so each new slot is an independent uniform draw over the whole
+ticket space, and the maker can wait for **any** outcome they want. To hand the
+prize to a range of width `w` they expect `total_tickets / w` attempts:
+
+| range held | expected slots | wall clock |
+| --- | --- | --- |
+| 10% (the per-contributor cap) | 10 | ~4 s |
+| 1% | 100 | ~40 s |
+| 0.1% | 1,000 | ~7 min |
+
+So the honest description is: **the maker chooses the winner, and it costs them
+a few seconds of waiting.** The only thing pushing back is that their own money
+sits in the vault until they settle.
+
+It is worth being clear that the assignment's other suggestion does not fix
+this. Committing `hash(secret)` at `initialize` and revealing at settlement
+moves the lever rather than removing it: the maker holds the secret, so with
+secret-only entropy they can compute the winner *during* the campaign and buy a
+range around it, which is strictly worse. Mixing the secret into the slot hash
+blocks that, but leaves the re-roll above completely intact, because the maker
+holds both halves. It buys one thing — it blinds the validator in point 2 — and
+that did not seem worth a 32 byte commitment field and an extra argument.
+
+What actually closes it is structural, not a better entropy source: split the
+draw into a commitment to slot `N + k` and a settlement that must use the hash
+of that specific slot. At commit time the hash does not exist, so nothing can be
+computed; at settlement time the hash is already determined, so nothing can be
+re-rolled. That is a second instruction, a second round trip, and a new failure
+mode when the committed slot ages out of the 512-entry sysvar window. It is not
+implemented here.
+
+### 2. Leader grinding
+
+The validator producing the slot whose hash is used chooses which transactions
+go into the block and in what order, and the proof-of-history chain mixes those
+contents in. Within the slot they can try several orderings and keep the one
+they prefer.
+
+Every input to the draw is public, so unlike point 1 this one is *targeted*: the
+leader can work out exactly which candidate hash makes a chosen backer win. The
+countermeasure would be to mix in a value the leader does not know — the
+maker's committed secret does exactly that — but see above for why that trade
+was not taken.
+
+### 3. Settling early ends ticket sales early
+
+`check_contributions` has no deadline check and never had one: it fires as soon
+as the target is met, which may be day one of a seven day campaign. Backers who
+meant to enter before the advertised deadline are then turned away.
+
+This is inherited, not introduced. The original program closed the `Fundraiser`
+on settlement, and `contribute` requires that account, so settlement already
+ended contributions — just with an `AccountNotInitialized` rather than a named
+error. The `drawn` guard reproduces the old behaviour on an account that now has
+to survive.
+
+It is still a lever the maker holds, and the lottery gives them a reason to use
+it: settling early freezes a ticket set they can see. Requiring the deadline
+before settling would remove it, at the cost of making the maker wait for money
+they have already raised.
+
+### 4. Sybil beats the contribution cap
+
+`MAX_CONTRIBUTION_PERCENTAGE` bounds one address at 10% of the target and
+therefore at roughly a 10% chance of winning. Nothing stops one person from
+using ten wallets and taking the whole prize. The cap predates this feature, but
+the lottery gives it something to be worth attacking for. It also makes point 1
+cheaper: a bigger range means fewer slots to wait.
+
+### 5. An unclaimed prize strands the rent
+
+`claim_prize` is what closes the `Fundraiser`. If the winner never comes forward
+— lost keys, lost interest — the prize and the account's rent stay where they
+are forever. Forfeiting after a deadline would free the rent but would take real
+money from someone who was merely slow, so nothing was added.
+
+The incentive is at least aligned: claiming also closes the winner's own
+`Contributor` account and returns its 0.00111 SOL, so the call pays for itself
+even on a campaign that landed exactly on target and left no prize at all.
+
+### 6. Modulo bias
+
+`entropy % total_tickets` is not perfectly uniform: 2^64 is not a multiple of the
+ticket count, so the lowest numbers are very slightly favoured. The skew is on
+the order of `total_tickets / 2^64`, around 1e-12 for a realistic campaign, and
+is ignored deliberately rather than by oversight.
+
+### 7. Ticket numbers are chosen, not random
+
+`ticket_start` is the current `total_tickets`, which anyone can read before
+sending. A backer knows exactly which numbers they are buying and can set the
+width by choosing the amount. That is harmless only because the winning number
+is not computable at contribute time — which is the single job the slot hash is
+doing.
+
+### Pre-existing problems the feature does not fix
+
+Worth naming because they now guard a prize:
+
+- Nothing ever closes the vault ATA, so about 0.00204 SOL per campaign sits
+  there. Recoverable in principle — a PDA can sign for an account that no longer
+  exists, and the canonical bump can be re-derived — but no instruction does it.
+- `Fundraiser` is seeded by the maker alone, so a maker can only ever run one
+  campaign: after a success the vault ATA blocks the next `initialize`, and after
+  a failure the `Fundraiser` account does. Verified against both paths.
+- `refund` relies on `close = contributor` as its only double-spend guard.
+  `claim_prize` ends up in the same shape, because it closes the `Fundraiser` it
+  needs; that is sound while the account is a required input, and where an account
+  survives its instruction the guard is an explicit `drawn` flag instead.
+- Closing the `Fundraiser` on the claim leaves every non-winning `Contributor`
+  PDA with no route out, since `refund` is the only thing that closes one and it
+  needs the campaign account. Another 0.00111 SOL per backer. A dedicated cleanup
+  instruction would collect both this and the vault; there is not one.
+
+## Tests
+
+`tests/lottery.ts`, nine cases on `solana-bankrun`, on top of the eleven the
+starter ships.
+
+| case | asserts |
+| --- | --- |
+| contiguous ranges | every range begins where the previous ended, width equals the contribution |
+| happy path | the draw fires, the number is in range, the maker receives exactly the target, the winner receives the overshoot, the campaign closes |
+| boundary | both neighbours share an edge with the winning range and both are refused with `NotWinningTicket` |
+| refund after settlement | `AlreadyDrawn`, and the prize is untouched |
+| contribution after the draw | `AlreadyDrawn` |
+| double draw | `AlreadyDrawn` |
+| claim before draw | `NotDrawn` |
+| contiguous top-up | the existing range widens rather than being replaced |
+| non-contiguous top-up | `NonContiguousTickets`, earlier tickets untouched |
+
+Deleting the draw makes the happy path, the boundary case and the double-draw
+case fail, so the feature is provably present.
+
+---
+
 ## Let's walk through the architecture:
 
 A fundraising account consists of:
