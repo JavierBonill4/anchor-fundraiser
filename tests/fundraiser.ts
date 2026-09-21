@@ -19,6 +19,27 @@ describe("fundraiser", () => {
 
   let makerATA: anchor.web3.PublicKey;
 
+  let receiptMint: anchor.web3.PublicKey;
+  let receiptAta: anchor.web3.PublicKey;
+  let metadataAccount: anchor.web3.PublicKey;
+  let masterEdition: anchor.web3.PublicKey;
+  let receiptMintKeypair: anchor.web3.Keypair;
+
+  // Metaplex NFT addition accounts.
+  const TOKEN_METADATA_PROGRAM_ID = new anchor.web3.PublicKey(
+    "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+  );
+
+  // Creating NFT receipt
+  const receipt = createReceiptAccounts();
+
+  receiptMintKeypair = receipt.receiptMintKeypair;
+  receiptMint = receipt.receiptMint;
+  receiptAta = receipt.receiptAta;
+  metadataAccount = receipt.metadataAccount;
+  masterEdition = receipt.masterEdition;
+
+
   const wallet = provider.wallet as NodeWallet;
 
   const fundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), maker.publicKey.toBuffer()], program.programId)[0];
@@ -33,6 +54,50 @@ describe("fundraiser", () => {
     });
     return signature;
   };
+
+  // CREATE RECEIPT ACCOUNT HELPER.
+  function createReceiptAccounts() {
+    const receiptMintKeypair =
+      anchor.web3.Keypair.generate();
+
+    const receiptMint =
+      receiptMintKeypair.publicKey;
+
+    const receiptAta =
+      getAssociatedTokenAddressSync(
+        receiptMint,
+        provider.publicKey
+      );
+
+    const [metadataAccount] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+          receiptMint.toBuffer(),
+        ],
+        TOKEN_METADATA_PROGRAM_ID
+      );
+
+    const [masterEdition] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+          receiptMint.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        TOKEN_METADATA_PROGRAM_ID
+      );
+
+    return {
+      receiptMintKeypair,
+      receiptMint,
+      receiptAta,
+      metadataAccount,
+      masterEdition,
+    };
+  }
 
   it("Test Preparation", async() => {
     const airdrop = await provider.connection.requestAirdrop(maker.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
@@ -75,7 +140,7 @@ describe("fundraiser", () => {
     console.log("Your transaction signature", tx);
   });
 
-  it("Contribute to Fundraiser", async () => {
+  it("Contribute to Fundraiser and receive NFT receipt one", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     const tx = await program.methods
@@ -86,8 +151,18 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint: receiptMint,
+      receiptAta: receiptAta,
+      metadataAccount: metadataAccount,
+      masterEdition: masterEdition,
+      tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: anchor.web3.SystemProgram.programId,
     })
+    .signers([
+      receiptMintKeypair,
+    ])
     .rpc({
       skipPreflight: true,
     })
@@ -100,7 +175,8 @@ describe("fundraiser", () => {
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
   });
-  it("Contribute to Fundraiser", async () => {
+  it("Contribute to Fundraiser no refund", async () => {
+    const receipt = createReceiptAccounts();
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     const tx = await program.methods
@@ -111,8 +187,18 @@ describe("fundraiser", () => {
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
+      receiptMint: receipt.receiptMint,
+      receiptAta: receipt.receiptAta,
+      metadataAccount: receipt.metadataAccount,
+      masterEdition: receipt.masterEdition,
+      tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: anchor.web3.SystemProgram.programId,
     })
+    .signers([
+      receipt.receiptMintKeypair,
+    ])
     .rpc({
       skipPreflight: true,
     })
@@ -138,7 +224,14 @@ describe("fundraiser", () => {
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,
+        receiptMint: receiptMint,
+        receiptAta: receiptAta,
+        metadataAccount: metadataAccount,
+        masterEdition: masterEdition,
+        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .rpc({
         skipPreflight: true,
@@ -200,6 +293,12 @@ describe("fundraiser", () => {
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,
+        receiptMint: receiptMint,
+        receiptAta: receiptAta,
+        metadataAccount: metadataAccount,
+        masterEdition: masterEdition,
+        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })

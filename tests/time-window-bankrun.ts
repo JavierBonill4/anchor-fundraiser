@@ -31,14 +31,60 @@ describe("fundraiser — the window closes (bankrun)", () => {
   const DURATION_DAYS = 7;
   const DAY = 86_400n;
   const SLOTS_PER_DAY = 216_000n; // 400ms slots
+  const TOKEN_METADATA_PROGRAM_ID = new anchor.web3.PublicKey(
+    "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+  );
 
   let context: ProgramTestContext;
   let provider: BankrunProvider;
   let program: Program<Fundraiser>;
   let payer: anchor.web3.Keypair;
 
+  function createReceiptAccounts() {
+    const receiptMintKeypair =
+      anchor.web3.Keypair.generate();
+
+    const receiptMint =
+      receiptMintKeypair.publicKey;
+
+    const receiptAta =
+      getAssociatedTokenAddressSync(
+        receiptMint,
+        payer.publicKey
+      );
+
+    const [metadataAccount] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+          receiptMint.toBuffer(),
+        ],
+        TOKEN_METADATA_PROGRAM_ID
+      );
+
+    const [masterEdition] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+          receiptMint.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        TOKEN_METADATA_PROGRAM_ID
+      );
+
+    return {
+      receiptMintKeypair,
+      receiptMint,
+      receiptAta,
+      metadataAccount,
+      masterEdition,
+    };
+  }
+
   before(async () => {
-    context = await startAnchor("", [], []);
+    context = await startAnchor("", [{name: "mpl_token_metadata", programId: TOKEN_METADATA_PROGRAM_ID}], []);
     provider = new BankrunProvider(context);
     anchor.setProvider(provider);
 
@@ -199,8 +245,10 @@ describe("fundraiser — the window closes (bankrun)", () => {
       [maker]
     );
 
-    const contributeIx = () =>
-      program.methods
+    const contributeIx = () => {
+      const receipt = createReceiptAccounts();
+
+      const instruction = program.methods
         .contribute(new anchor.BN(CONTRIBUTION))
         .accountsPartial({
           contributor: payer.publicKey,
@@ -209,14 +257,39 @@ describe("fundraiser — the window closes (bankrun)", () => {
           contributorAccount,
           contributorAta,
           vault,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+
+          // Receipt NFT
+          receiptMint: receipt.receiptMint,
+          receiptAta: receipt.receiptAta,
+          metadataAccount: receipt.metadataAccount,
+          masterEdition: receipt.masterEdition,
+          tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+
+          // Programs
+          associatedTokenProgram:
+            ASSOCIATED_TOKEN_PROGRAM_ID,
+          tokenProgram:
+            TOKEN_PROGRAM_ID,
+          systemProgram:
+            anchor.web3.SystemProgram.programId,
         })
         .instruction();
 
+      return {
+        instruction,
+        receiptMintKeypair:
+          receipt.receiptMintKeypair,
+        receiptMint: receipt.receiptMint,
+        receiptAta: receipt.receiptAta,
+        metadataAccount: receipt.metadataAccount,
+        masterEdition: receipt.masterEdition,
+      };
+    };
+    const contribution = contributeIx();
+
     // --- day 0: the window is open --------------------------------------
     try {
-      await send([await contributeIx()]);
+      await send([await contribution.instruction], [contribution.receiptMintKeypair]);
     } catch (err) {
       assert.fail(
         `a contribution on day 0 of a ${DURATION_DAYS} day fundraiser must be ` +
@@ -232,10 +305,14 @@ describe("fundraiser — the window closes (bankrun)", () => {
     // --- day 8: past the deadline, and short of the target ---------------
     await advanceDays(8n);
 
+    const late = contributeIx();
     try {
-      await send([await contributeIx()]);
+      await send([await late.instruction],[late.receiptMintKeypair]);
       assert.fail("a contribution after the deadline must be refused");
     } catch (err) {
+      console.dir(err, { depth: null });
+      console.log("logs:", err?.logs);
+      console.log("message:", err?.message);
       assertErrorIs(err, "FundraiserEnded",
         "the contribution should be refused because the window has closed");
     }
@@ -252,6 +329,12 @@ describe("fundraiser — the window closes (bankrun)", () => {
           contributorAccount,
           contributorAta,
           vault,
+          receiptMint: contribution.receiptMint,
+          receiptAta: contribution.receiptAta,
+          metadataAccount: contribution.metadataAccount,
+          masterEdition: contribution.masterEdition,
+          tokenMetadataProgram:  TOKEN_METADATA_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: anchor.web3.SystemProgram.programId,
         })

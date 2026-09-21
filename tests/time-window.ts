@@ -30,6 +30,10 @@ describe("fundraiser — contribution window", () => {
   anchor.setProvider(provider);
 
   const program = anchor.workspace.Fundraiser as Program<Fundraiser>;
+  // Metaplex NFT addition accounts.
+  const TOKEN_METADATA_PROGRAM_ID = new anchor.web3.PublicKey(
+    "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+  );
   const wallet = provider.wallet as NodeWallet;
 
   // Comfortably above MIN_AMOUNT_TO_RAISE, and 1_000_000 is under the 10% per-
@@ -42,6 +46,50 @@ describe("fundraiser — contribution window", () => {
     await provider.connection.confirmTransaction({ signature, ...block });
     return signature;
   };
+
+  // CREATE RECEIPT ACCOUNT HELPER.
+  function createReceiptAccounts() {
+    const receiptMintKeypair =
+      anchor.web3.Keypair.generate();
+
+    const receiptMint =
+      receiptMintKeypair.publicKey;
+
+    const receiptAta =
+      getAssociatedTokenAddressSync(
+        receiptMint,
+        provider.publicKey
+      );
+
+    const [metadataAccount] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+          receiptMint.toBuffer(),
+        ],
+        TOKEN_METADATA_PROGRAM_ID
+      );
+
+    const [masterEdition] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+          receiptMint.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        TOKEN_METADATA_PROGRAM_ID
+      );
+
+    return {
+      receiptMintKeypair,
+      receiptMint,
+      receiptAta,
+      metadataAccount,
+      masterEdition,
+    };
+  }
 
   /**
    * Anchor error code for a rejected transaction, however the error arrives.
@@ -142,8 +190,12 @@ describe("fundraiser — contribution window", () => {
     return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
   };
 
-  const contribute = (c: Campaign, amount: number) =>
-    program.methods
+  type Receipt = ReturnType<typeof createReceiptAccounts>;
+
+  const contribute = async (c: Campaign, amount: number) => {
+    const receipt = createReceiptAccounts();
+
+    await program.methods
       .contribute(new anchor.BN(amount))
       .accountsPartial({
         contributor: provider.publicKey,
@@ -152,12 +204,26 @@ describe("fundraiser — contribution window", () => {
         contributorAccount: c.contributorAccount,
         contributorAta: c.contributorAta,
         vault: c.vault,
+
+        // NFT receipt accounts
+        receiptMint: receipt.receiptMint,
+        receiptAta: receipt.receiptAta,
+        metadataAccount: receipt.metadataAccount,
+        masterEdition: receipt.masterEdition,
+        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+
+        // Programs
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
+      .signers([receipt.receiptMintKeypair])
       .rpc();
 
-  const refund = (c: Campaign) =>
+      return receipt;
+  };
+
+  const refund = (c: Campaign, receipt: Receipt) =>
     program.methods
       .refund()
       .accountsPartial({
@@ -168,6 +234,14 @@ describe("fundraiser — contribution window", () => {
         contributorAccount: c.contributorAccount,
         contributorAta: c.contributorAta,
         vault: c.vault,
+
+        receiptMint: receipt.receiptMint,
+        receiptAta: receipt.receiptAta,
+        metadataAccount: receipt.metadataAccount,
+        masterEdition: receipt.masterEdition,
+        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
@@ -205,8 +279,9 @@ describe("fundraiser — contribution window", () => {
     const campaign = await openCampaign(7);
 
     // Setup, not the assertion: there has to be something to refund.
+    let receipt!: Receipt;
     try {
-      await contribute(campaign, CONTRIBUTION);
+      receipt = await contribute(campaign, CONTRIBUTION);
     } catch (err) {
       assert.fail(
         `could not set up this test: the contribution was rejected with ` +
@@ -215,7 +290,7 @@ describe("fundraiser — contribution window", () => {
     }
 
     try {
-      await refund(campaign);
+      await refund(campaign, receipt);
       assert.fail("a refund on day 0 of a 7 day fundraiser must be refused");
     } catch (err) {
       assertErrorIs(err, "FundraiserNotEnded",
