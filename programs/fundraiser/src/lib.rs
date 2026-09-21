@@ -43,3 +43,12 @@ pub mod fundraiser {
         Ok(())
     }
 }
+
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub milestone_percentage: u8,
+    pub current_amount: u64,
+    pub target_amount: u64,
+}
+

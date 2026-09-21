@@ -490,3 +490,29 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: Milestone Unlocks (Quarter Marks)
+
+### What it does
+Tracks campaign funding progress on-chain at three milestone thresholds: 25%, 50%, and 75% of the target amount. When a contribution pushes the total raised across one or more of these marks, the program sets the corresponding milestone bit on the `Fundraiser` account and emits an on-chain `MilestoneReached` event. Each milestone fires at most once, and a single contribution that leaps across multiple thresholds (e.g. from 20% to 60%) triggers all crossed milestones in order without skipping any.
+
+### How it works
+- **State:** Appended `pub milestones_fired: u8` to the `Fundraiser` account struct (bit 0 = 25%, bit 1 = 50%, bit 2 = 75%).
+- **Timing & Hook:** Calculated inline at the end of the `contribute` instruction immediately after updating `current_amount`.
+- **Arithmetic:** Evaluates `quarters = current_amount.checked_mul(4)? / amount_to_raise` using checked integer math (multiplying before dividing to prevent truncation error and avoid overflow).
+- **Idempotency:** A bitwise guard `if self.fundraiser.milestones_fired & flag == 0` ensures each quarter mark fires exactly once. Once set, the bit is never unset.
+- **Event:** Emits `MilestoneReached { fundraiser, milestone_percentage, current_amount, target_amount }`, enabling frontend clients and off-chain indexing services to react to campaign progress in real time via WebSocket subscriptions without polling RPC endpoints.
+- **Error:** Adds `FundraiserError::Overflow` to safeguard all arithmetic calculations against overflow or division errors.
+
+### What it costs
+- **Rent:** 1 extra byte on the `Fundraiser` account (`milestones_fired: u8`). The account allocation grows from 89 bytes to 90 bytes (plus the 8-byte discriminator), requiring negligible additional rent exemption (~0.000007 SOL paid once by the maker at initialization).
+- **Accounts:** Zero additional accounts or PDAs.
+- **Compute:** Adds ~1,200 to 1,600 compute units per contribution to perform checked multiplication/division, bitwise flag checks, and event serialization via `emit!`.
+
+### How you would attack it
+The primary vulnerability stems from state desynchronization following refunds:
+1. **Asymmetric State Decay:** `current_amount` decreases when contributors claim refunds via `refund` after a failed or expired campaign, but `milestones_fired` is intentionally write-once and monotonic. If a campaign reaches 75% and later experiences refunds that reduce the vault balance down to 40%, `milestones_fired` remains `0b00000111` (75% reached). An attacker or naive frontend that inspects only `milestones_fired` rather than the active vault balance would perceive the fundraiser as having achieved milestone thresholds that the live treasury no longer backs.
+2. **Dust-Rounding Threshold Manipulation:** When `amount_to_raise` is not a multiple of 4, integer division truncates. While integer division guarantees that milestone marks require at least `floor(target * fraction)`, precision differences can allow milestone events to fire on edge-case amounts depending on rounding rules. All frontends must always treat `vault.amount` as the authoritative source of truth for funds held.
+
