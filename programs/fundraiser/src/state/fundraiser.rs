@@ -10,4 +10,9 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    pub reveal_hash: [u8; 32],
+    pub reward_bps: u16,
+    pub total_tickets: u64,
+    pub winner_drawn: bool,
+    pub reveal_deadline: i64,
 }

@@ -85,7 +85,7 @@ describe("fundraiser — contribution window", () => {
   const openCampaign = async (durationDays: number): Promise<Campaign> => {
     const maker = anchor.web3.Keypair.generate();
     await provider.connection
-      .requestAirdrop(maker.publicKey, anchor.web3.LAMPORTS_PER_SOL)
+      .requestAirdrop(maker.publicKey, 5 * anchor.web3.LAMPORTS_PER_SOL)
       .then(confirm);
 
     const mint = await createMint(
@@ -122,15 +122,21 @@ describe("fundraiser — contribution window", () => {
       [Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
       program.programId
     );
+
+    const [bond] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("bond"), fundraiser.toBuffer()],
+      program.programId
+    );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await program.methods
-      .initialize(new anchor.BN(TARGET), durationDays)
+      .initialize(new anchor.BN(TARGET), durationDays, new Array(32).fill(0), 0)
       .accountsPartial({
         maker: maker.publicKey,
         mintToRaise: mint,
         fundraiser,
         vault,
+        bond,
         systemProgram: anchor.web3.SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -173,9 +179,7 @@ describe("fundraiser — contribution window", () => {
       })
       .rpc();
 
-  // ------------------------------------------------------------------
   // The window is open
-  // ------------------------------------------------------------------
 
   it("accepts a contribution while the window is open", async () => {
     const campaign = await openCampaign(7);
@@ -227,9 +231,7 @@ describe("fundraiser — contribution window", () => {
     assert.strictEqual(vault.value.amount, String(CONTRIBUTION), "vault must be untouched");
   });
 
-  // ------------------------------------------------------------------
   // The window is closed
-  // ------------------------------------------------------------------
 
   it("refuses a contribution once the window has closed", async () => {
     // duration = 0 means zero days of fundraising: the window is shut on arrival.

@@ -8,13 +8,10 @@ use anchor_spl::token::{
 };
 
 use crate::{
-    state::{
+    ANCHOR_DISCRIMINATOR, MAX_CONTRIBUTION_PERCENTAGE, MAX_TICKETS_PER_CONTRIBUTOR, PERCENTAGE_SCALER, SECONDS_TO_DAYS, error::FundraiserError, state::{
         Contributor, 
         Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    }
 };
 
 #[derive(Accounts)]
@@ -72,24 +69,28 @@ impl<'info> Contribute<'info> {
             FundraiserError::ContributionTooBig
         );
 
-        // Check if the fundraising duration has been reached
+        // Check if the maximum contributions per contributor have been reached
+        let max_per_contributor = self.fundraiser.amount_to_raise
+            .checked_mul(MAX_CONTRIBUTION_PERCENTAGE)
+            .ok_or(FundraiserError::Overflow)?
+            / PERCENTAGE_SCALER;
+
+        require!(amount <= max_per_contributor, FundraiserError::ContributionTooBig);
+
+         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
         require!(
-            (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
+            current_time.checked_sub(self.fundraiser.time_started).ok_or(FundraiserError::Overflow)? / SECONDS_TO_DAYS
                 < self.fundraiser.duration as i64,
-            crate::FundraiserError::FundraiserEnded
+                FundraiserError::FundraiserEnded
         );
 
-        // Check if the maximum contributions per contributor have been reached
-        require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
-            FundraiserError::MaximumContributionsReached
-        );
+        // Cumulative cap across all of this contributor's contributions.
+        let new_total = self.contributor_account.amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+        require!(new_total <= max_per_contributor,FundraiserError::MaximumContributionsReached);
 
-        // Transfer the funds from the contributor to the vault.
-        // As of Anchor 1.0 a CpiContext takes the program's *address*, not its
-        // AccountInfo.
         let cpi_accounts = Transfer {
             from: self.contributor_ata.to_account_info(),
             to: self.vault.to_account_info(),
@@ -102,9 +103,42 @@ impl<'info> Contribute<'info> {
         transfer(cpi_ctx, amount)?;
 
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+       self.fundraiser.current_amount = self.fundraiser.current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = new_total;
+
+        let ticket_unit = self.fundraiser.amount_to_raise
+            .checked_mul(25)
+            .ok_or(FundraiserError::Overflow)?
+            .checked_div(10_000)
+            .ok_or(FundraiserError::Overflow)?;
+
+        let tickets_to_grant = amount
+            .checked_div(ticket_unit)
+            .ok_or(FundraiserError::Overflow)?
+            .min(MAX_TICKETS_PER_CONTRIBUTOR as u64);
+
+        let already_held = self.contributor_account.ticket_end
+            .checked_sub(self.contributor_account.ticket_start)
+            .unwrap_or(0);
+
+        let available_ticket = MAX_TICKETS_PER_CONTRIBUTOR.saturating_sub(already_held) as u64;
+        let ticket_to_grant = tickets_to_grant.min(available_ticket) as u64;
+
+        if ticket_to_grant > 0 {
+            if already_held == 0 {
+                self.contributor_account.ticket_start = self.fundraiser.total_tickets;
+            }
+            self.fundraiser.total_tickets = self.fundraiser.total_tickets
+                .checked_add(ticket_to_grant)
+                .ok_or(FundraiserError::Overflow)?;
+            self.contributor_account.ticket_end = self.contributor_account.ticket_start
+                .checked_add(already_held)
+                .and_then(|e| e.checked_add(ticket_to_grant))
+                .ok_or(FundraiserError::Overflow)?;
+        }
 
         Ok(())
     }

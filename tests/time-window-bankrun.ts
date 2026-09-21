@@ -26,7 +26,7 @@ import { assert, AssertionError } from "chai";
  * "refunds start" testable at all.
  */
 describe("fundraiser — the window closes (bankrun)", () => {
-  const TARGET = 30_000_000;
+  const TARGET = 100_000_000;
   const CONTRIBUTION = 1_000_000;
   const DURATION_DAYS = 7;
   const DAY = 86_400n;
@@ -154,7 +154,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
         anchor.web3.SystemProgram.transfer({
           fromPubkey: payer.publicKey,
           toPubkey: maker.publicKey,
-          lamports: anchor.web3.LAMPORTS_PER_SOL,
+          lamports: 5 * anchor.web3.LAMPORTS_PER_SOL,
         }),
         anchor.web3.SystemProgram.createAccount({
           fromPubkey: payer.publicKey,
@@ -168,8 +168,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
         createMintToInstruction(mint, contributorAta, payer.publicKey, 10 * CONTRIBUTION),
       ],
       [mintKeypair]
-    );
-
+    );    
     // --- open a seven day campaign --------------------------------------
     const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
@@ -179,17 +178,24 @@ describe("fundraiser — the window closes (bankrun)", () => {
       [Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
       program.programId
     );
+
+    const [bond] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("bond"), fundraiser.toBuffer()],
+      program.programId
+    );
+
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await send(
       [
         await program.methods
-          .initialize(new anchor.BN(TARGET), DURATION_DAYS)
+          .initialize(new anchor.BN(TARGET), DURATION_DAYS, new Array(32).fill(0), 0)
           .accountsPartial({
             maker: maker.publicKey,
             mintToRaise: mint,
             fundraiser,
             vault,
+            bond,
             systemProgram: anchor.web3.SystemProgram.programId,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,

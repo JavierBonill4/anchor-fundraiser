@@ -1,0 +1,6 @@
+### Lottery Ticket Feature
+
+This feature gives contributors lottery tickets in proportion to the amount they contribute, with each contributor receiving a ticket range that can be used to prove ownership of a winning ticket without the program needing to enumerate contributor accounts. When the fundraiser succeeds, the maker reveals a secret that was committed as a hash during initialization, and the program combines the revealed secret with on-chain slot data to derive the winning ticket. 
+The feature benefits contributors by giving them a chance to receive the lottery reward based on their contribution while keeping the on-chain state compact. 
+A dishonest contributor would try to manipulate their contribution timing or submit multiple contributions to gain an unfair advantage, while a dishonest fundraiser maker could attempt to choose or withhold the reveal secret after seeing the outcome. 
+The commit–reveal mechanism prevents the maker from changing the committed secret after initialization, while the reveal deadline limits the maker's ability to indefinitely withhold the result; however, the scheme is not equivalent to a production VRF because the maker can still choose whether to reveal their committed secret, and the underlying on-chain slot data is not perfectly unpredictable.

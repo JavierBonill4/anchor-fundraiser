@@ -20,3 +20,4 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 # Pinned exactly so every student's crate matches the CLI the course uses.
 anchor-lang = { version = "=1.1.2", features = ["init-if-needed"] }
 anchor-spl = "=1.1.2"
+sha2 = "0.10.9"

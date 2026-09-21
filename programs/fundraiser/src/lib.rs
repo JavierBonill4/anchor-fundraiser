@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW");
+declare_id!("GQLxrcNb6xyZh3LLpmpSq4SzkYMNfuQh5sNoyiE9CE9L");
 
 mod state;
 mod instructions;
@@ -15,9 +15,9 @@ pub use constants::*;
 pub mod fundraiser {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, amount: u64, duration: u8) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>, amount: u64, duration: u8, reveal_hash: [u8; 32], reward_bps: u16,) -> Result<()> {
 
-        ctx.accounts.initialize(amount, duration, &ctx.bumps)?;
+        ctx.accounts.initialize(amount, duration, reveal_hash, reward_bps, &ctx.bumps)?;
 
         Ok(())
     }
@@ -40,6 +40,16 @@ pub mod fundraiser {
 
         ctx.accounts.refund()?;
 
+        Ok(())
+    }
+
+    pub fn draw_winner(ctx: Context<DrawWinner>, secret: [u8; 32]) -> Result<()> {
+        ctx.accounts.draw_winner(secret)?;
+        Ok(())
+    }
+
+    pub fn claim_penalty(ctx: Context<ClaimPenalty>) -> Result<()> {
+        ctx.accounts.claim_penalty()?;
         Ok(())
     }
 }

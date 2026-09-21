@@ -1,5 +1,11 @@
 pub const ANCHOR_DISCRIMINATOR: usize = 8;
 pub const MIN_AMOUNT_TO_RAISE: u64 = 3;
 pub const SECONDS_TO_DAYS: i64 = 86400;
-pub const MAX_CONTRIBUTION_PERCENTAGE: u64 = 10;
+pub const MAX_CONTRIBUTION_PERCENTAGE: u64 = 5;
 pub const PERCENTAGE_SCALER: u64 = 100;
+pub const BOND_LAMPORTS: u64 = 3000000000; // 3SOL
+pub const TICKET_UNIT_BPS: u64 = 25;
+pub const MAX_TICKETS_PER_CONTRIBUTOR: u64 = 20; 
+pub const REVEAL_WINDOW: i64 = 2 * 60 * 60; // 2hours
+pub const PENALTY_REFUND_COOLDOWN: i64 = 24 * 60 * 60; 
+pub const PENALTY_CLAIM_DELAY_SECS: i64 = 24 * 60 * 60; 

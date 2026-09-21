@@ -35,8 +35,8 @@ describe("fundraiser", () => {
   };
 
   it("Test Preparation", async() => {
-    const airdrop = await provider.connection.requestAirdrop(maker.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
-    console.log("\nAirdropped 1 SOL to maker", airdrop);
+    const airdrop = await provider.connection.requestAirdrop(maker.publicKey, 5 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
+    console.log("\nAirdropped 5 SOL to maker", airdrop);
 
     mint = await createMint(provider.connection, wallet.payer, provider.publicKey, provider.publicKey, 6);
     console.log("Mint created", mint.toBase58());
@@ -52,27 +52,35 @@ describe("fundraiser", () => {
   it("Initialize Fundaraiser", async () => {
     // Add your test here.
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+    
+    const [bond] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("bond"), fundraiser.toBuffer()],
+      program.programId
+    );
 
-    const tx = await program
-    .methods
-    .initialize(new anchor.BN(30000000), 7)   // days; must be at least 1
-    .accountsPartial({
-      maker: maker.publicKey,
-      fundraiser,
-      mintToRaise: mint,
-      vault,
-      systemProgram: anchor.web3.SystemProgram.programId,
-      tokenProgram: TOKEN_PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-    })
-    .signers([maker])
-    .rpc({
-      skipPreflight: true,
-    })
-    .then(confirm);
-
-    console.log("\nInitialized fundraiser Account");
-    console.log("Your transaction signature", tx);
+    try {
+      const tx = await program
+        .methods
+        .initialize(new anchor.BN(30000000), 7, new Array(32).fill(0), 0)
+        .accountsPartial({
+          maker: maker.publicKey,
+          fundraiser,
+          mintToRaise: mint,
+          vault,
+          bond,
+          systemProgram: anchor.web3.SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        })
+        .signers([maker])
+        .rpc({ skipPreflight: true })
+        .then(confirm);
+      console.log("\nInitialized fundraiser Account");
+      console.log("Your transaction signature", tx);
+    } catch (err: any) {
+      console.log(JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
+      throw err;
+    }
   });
 
   it("Contribute to Fundraiser", async () => {
@@ -100,32 +108,7 @@ describe("fundraiser", () => {
     let contributorAccount = await program.account.contributor.fetch(contributor);
     console.log("Contributor balance", contributorAccount.amount.toString());
   });
-  it("Contribute to Fundraiser", async () => {
-    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
-
-    const tx = await program.methods
-    .contribute(new anchor.BN(1000000))
-    .accountsPartial({
-      contributor: provider.publicKey,
-      fundraiser,
-      contributorAccount: contributor,
-      contributorAta: contributorATA,
-      vault,
-      tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .rpc({
-      skipPreflight: true,
-    })
-    .then(confirm);
-
-    console.log("\nContributed to fundraiser", tx);
-    console.log("Your transaction signature", tx);
-    console.log("Vault balance", (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-
-    let contributorAccount = await program.account.contributor.fetch(contributor);
-    console.log("Contributor balance", contributorAccount.amount.toString());
-  });
-
+  
   it("Contribute to Fundraiser - Robustness Test", async () => {
     try {
       const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);

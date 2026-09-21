@@ -9,7 +9,7 @@ use anchor_spl::{
 };
 
 use crate::{
-    state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE
+    ANCHOR_DISCRIMINATOR, BOND_LAMPORTS, MIN_AMOUNT_TO_RAISE, REVEAL_WINDOW,SECONDS_TO_DAYS, error::FundraiserError, state::{Fundraiser, Bond}
 };
 
 #[derive(Accounts)]
@@ -32,13 +32,21 @@ pub struct Initialize<'info> {
         associated_token::authority = fundraiser,
     )]
     pub vault: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = maker,
+        space = ANCHOR_DISCRIMINATOR + Bond::INIT_SPACE,
+        seeds = [b"bond", fundraiser.key().as_ref()],
+        bump,
+    )]
+    pub bond:  Account<'info, Bond>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
 impl<'info> Initialize<'info> {
-    pub fn initialize(&mut self, amount: u64, duration: u8, bumps: &InitializeBumps) -> Result<()> {
+    pub fn initialize(&mut self, amount: u64, duration: u8,reveal_hash:[u8; 32], reward_bps: u16, bumps: &InitializeBumps) -> Result<()> {
 
         // Check if the amount to raise meets the minimum amount required.
         //
@@ -54,6 +62,15 @@ impl<'info> Initialize<'info> {
 
         require!(amount > minimum, FundraiserError::InvalidAmount);
 
+        let time_started = Clock::get()?.unix_timestamp;
+
+        let window_close = time_started
+            .checked_add((duration as i64).checked_mul(SECONDS_TO_DAYS).ok_or(FundraiserError::Overflow)?)
+            .ok_or(FundraiserError::Overflow)?;
+        let reveal_deadline: i64 = window_close
+            .checked_add(REVEAL_WINDOW)
+            .ok_or(FundraiserError::Overflow)?;
+
         // Initialize the fundraiser account
         self.fundraiser.set_inner(Fundraiser {
             maker: self.maker.key(),
@@ -62,8 +79,27 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            reveal_hash,
+            reward_bps,
+            total_tickets: 0,
+            winner_drawn: false,
+            reveal_deadline,
         });
+
+        self.bond.set_inner(Bond {
+            fundraiser: self.fundraiser.key(),
+            bump: bumps.bond,
+        });
+        let cpi_ctx = CpiContext::new(
+            self.system_program.key(),
+            anchor_lang::system_program::Transfer{
+                from: self.maker.to_account_info(),
+                to: self.bond.to_account_info(),
+            },
+        );
+
+        anchor_lang::system_program::transfer( cpi_ctx, BOND_LAMPORTS)?;
         
         Ok(())
     }
