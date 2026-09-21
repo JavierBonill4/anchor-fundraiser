@@ -490,3 +490,54 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+
+---
+
+# Ownership shares
+
+## What it does
+
+When you contribute you get shares back, one per token. If the campaign succeeds you keep them, that's your proof of how much of the thing you own. If it fails, the shares are your refund ticket: hand them back, get the same amount of the raise token out of the vault.
+
+There is no marketplace and no voting in here. The shares are normal SPL tokens, so you can transfer them, and refund pays whoever holds them, not whoever originally contributed. If Alice gives her shares to Bob and the campaign fails, Bob gets the refund. Voting on top of this is the obvious next step but I didn't build it.
+
+## How it works
+
+`initialize` creates a share mint as a PDA (`[b"shares", fundraiser]`) with the same decimals as the raise mint, mints the whole supply (exactly `amount_to_raise`) into a share vault owned by the fundraiser, and then revokes the mint authority. After that the supply can never change.
+
+`contribute` transfers `amount` shares from the share vault to the contributor, right after the money goes into the vault. The `Contributor` account is still there, but only for the 10% cap. It tracks what a wallet has put in, which you can't read off a token balance because shares can be moved around.
+
+`refund` doesn't look at the `Contributor` account anymore. It takes whatever shares the caller holds back into the share vault and pays out that many raise tokens. You can still pass your `Contributor` PDA to get its rent back, or skip it if you never had one. When the last share comes back (`current_amount` is 0 and the vault is empty) the same instruction burns the supply, closes both vaults and closes the fundraiser, so the maker gets the rent back.
+
+The thing that makes it safe:
+
+```
+shares outside the share vault == current_amount == raise tokens in the vault
+```
+
+Every share out there was bought with one token that's still in the vault. Moving shares between wallets doesn't change the total, so the most that can ever be refunded is exactly what's in the vault. The only way to break that would be to mint more shares, and nobody can.
+
+Side effect: when the share vault is empty, `contribute` fails. So you can't overfund a campaign anymore, which the original program allowed.
+
+## What it costs
+
+The maker pays rent for one mint (82 bytes, about 0.0015 SOL) and one token account for the share vault (165 bytes, about 0.002 SOL). Both vaults get closed on teardown after a failed campaign, so that rent comes back. The mint doesn't, a normal SPL mint can't be closed, so ~0.0015 SOL is lost per campaign. Token-2022 with `MintCloseAuthority` would fix that.
+
+Every contributor pays for their own share token account, about 0.002 SOL. Refund doesn't close it, they can do that themselves once it's empty.
+
+Compute roughly doubles: `initialize` goes from ~40k to ~90k CU because of the mint creation, mint and revoke, `contribute` from ~34k to ~75k for the second transfer plus creating the share ATA, and the final `refund` from ~31k to ~60k because it also burns and closes three accounts. I also had to `Box` the token accounts in `Contribute` and `Refund`, seven of them on the stack blew the 4KB limit and `anchor build` complained.
+
+## How I would attack it
+
+Sending tokens straight to the vault. Anyone can transfer raise tokens to the vault ATA without calling `contribute`. If that happens the last refund's `close_account` on the vault would fail (balance isn't zero) and the whole transaction reverts, so the last person could never get their money back. That's why the teardown only runs if the vault is actually going to be empty after the payout. With dust in it the refund still works and the campaign just stays open, maker loses a bit of rent, nobody loses money. The same trick against the original program is worse: push the vault over the target and every refund fails with `TargetMet`. Not my bug but it's still there.
+
+Sending shares straight to the share vault. If someone does that instead of calling refund they just forfeit their money. The tokens stay in the vault, `current_amount` never hits zero, the campaign never tears down. Only hurts them, so I didn't guard against it.
+
+Sybil the cap. It's 10% per wallet. Ten wallets and you own everything. Was already true before, just matters more now that shares mean ownership.
+
+Move the shares away and then refund. Alice transfers to Bob and calls refund, she has nothing, `NoSharesToReturn`. Bob refunding shares he was given is the design, not a bug. A share of a failed campaign is worth exactly one token so there's nothing to gain from passing them around.
+
+The maker just takes the money. If the campaign succeeds the maker gets the pot and contributors keep the shares. Whether those shares mean anything after that is entirely up to the maker, the program can't enforce what ownership means off-chain. That's the honest limit of tokenising a car.
+
+Voting, if I built it. Vote, send shares to a second wallet, vote again. A vote record per wallet doesn't stop that. You'd need to escrow shares for the length of a proposal, or make them non-transferable with Token-2022, which also means nobody can hand their refund claim to someone else.

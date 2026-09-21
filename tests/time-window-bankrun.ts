@@ -258,7 +258,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
         .instruction(),
     ]);
 
-    assert.strictEqual(await tokenBalance(vault), 0n, "the vault should be empty");
+    assert.isNull(await context.banksClient.getAccount(vault), "the vault should be closed");
     assert.strictEqual(
       await tokenBalance(contributorAta),
       BigInt(10 * CONTRIBUTION),
