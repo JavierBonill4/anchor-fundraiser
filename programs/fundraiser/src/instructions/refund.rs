@@ -96,6 +96,12 @@ impl<'info> Refund<'info> {
         // Update the fundraiser state by reducing the amount contributed
         self.fundraiser.current_amount -= self.contributor_account.amount;
 
+        // Recompute from scratch: refunding can only remove milestone bits.
+        self.fundraiser.milestones = crate::state::Fundraiser::milestones_for(
+            self.fundraiser.current_amount,
+            self.fundraiser.amount_to_raise,
+        )?;
+
         Ok(())
     }
 }

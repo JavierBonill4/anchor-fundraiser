@@ -490,3 +490,102 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: Milestones
+
+### What it does
+
+Every `Fundraiser` account now tracks which funding milestones it has
+reached, as a `u8` bitmask on a new `milestones` field:
+
+| Bit | Milestone |
+|-----|-----------|
+| 0   | 25% of `amount_to_raise` reached |
+| 1   | 50% of `amount_to_raise` reached |
+| 2   | 75% of `amount_to_raise` reached |
+
+The mask is recomputed — not incrementally patched — on every successful
+`contribute` and every successful `refund`, so it is always an exact,
+current snapshot of `current_amount / amount_to_raise`, never a stale
+approximation.
+
+### How it works
+
+All of the logic lives in one pure function, `Fundraiser::milestones_for`:
+
+```rust
+pub fn milestones_for(current_amount: u64, amount_to_raise: u64) -> Result<u8> {
+    const MILESTONE_PERCENTAGES: [u64; 3] = [25, 50, 75];
+    let mut bits: u8 = 0;
+    for (i, pct) in MILESTONE_PERCENTAGES.iter().enumerate() {
+        let threshold = amount_to_raise
+            .checked_mul(*pct)
+            .ok_or(crate::FundraiserError::MilestoneOverflow)?
+            / 100;
+        if current_amount >= threshold && threshold > 0 {
+            bits |= 1 << i;
+        }
+    }
+    Ok(bits)
+}
+```
+
+Both `contribute` and `refund` call this exact function, passing their own
+post-update `current_amount`, and overwrite `fundraiser.milestones` with
+whatever it returns. This is the whole design decision: **one function
+decides the mask in both directions.** `contribute` only ever increases
+`current_amount`, so calling the function afterward can only add bits.
+`refund` only ever decreases it, so calling the function afterward can
+only remove bits. Neither instruction contains its own copy of the
+threshold logic, so there is no way for the two to drift out of sync
+with each other.
+
+### The trap this avoids
+
+A more naive implementation is tempting: in `contribute`, check "did we
+just cross 25%? set bit 0"; in `refund`, check "did we just drop below
+25%? clear bit 0." This requires writing the threshold comparison twice,
+once per direction, and it is easy for the two copies to disagree — for
+example, one using `>` and the other using `>=`. Recomputing from
+scratch every time removes the class of bug entirely.
+
+### What it costs
+
+- **Storage:** 1 extra byte per `Fundraiser` account, automatically
+  accounted for by `#[derive(InitSpace)]`.
+- **Compute:** three integer divisions and up to three comparisons per
+  `contribute` or `refund` call — negligible next to the CPI cost each
+  instruction already pays.
+- **No new accounts, no new CPIs, no new mints.**
+
+### How this could be attacked
+
+**Overflow.** `amount_to_raise.checked_mul(75)` can overflow `u64` for a
+large enough target. The checked multiplication surfaces this as
+`FundraiserError::MilestoneOverflow` rather than silently wrapping or
+panicking. Tested directly with a target that overflows the 75% check
+but not the pre-existing 10%-cap check, isolating the failure to the
+milestone math specifically.
+
+**Bit-skipping.** `MAX_CONTRIBUTION_PERCENTAGE` limits any single wallet
+to 10% of the target, so no single contribution can skip a milestone by
+itself. Multiple contributors can collectively cross more than one
+milestone at once — this is intended and tested, and is not exploitable:
+it just means genuinely-earned progress sets every bit that's due.
+
+**Refund draining.** Since `refund` recomputes the mask from the new,
+lower `current_amount`, refunding contributors after a milestone is hit
+correctly clears bits as the total falls back below each threshold —
+tested explicitly by crossing two milestones, closing the window unmet,
+refunding every contributor, and asserting the mask returns to zero.
+
+### Tests
+
+`tests/milestones.ts`, four cases: the happy path (crossing 50% but not
+75%), an exact-boundary case (one token short of 25% vs. exactly 25%),
+an overflow abuse case asserting the named `MilestoneOverflow` error,
+and the refund-symmetry trap test described above. All four use
+`solana-bankrun` since the last one needs to fast-forward past the
+fundraiser's deadline to legally call `refund`.
