@@ -42,4 +42,11 @@ pub mod fundraiser {
 
         Ok(())
     }
+
+    pub fn claim_reward(ctx: Context<ClaimReward>) -> Result<()> {
+
+        ctx.accounts.claim_reward()?;
+
+        Ok(())
+    }
 }

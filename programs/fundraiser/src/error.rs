@@ -17,5 +17,11 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("This contributor has already claimed their reward tokens")]
+    RewardAlreadyClaimed,
+    #[msg("This account has not contributed anything to claim rewards for")]
+    NothingToClaim,
+    #[msg("Reward amount overflowed")]
+    RewardOverflow
 }

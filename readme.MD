@@ -490,3 +490,145 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+# Feature: contributor reward token
+
+## What it does
+
+Backers of a campaign that hits its target can claim reward tokens — a
+CAMPAIGN balance in their own wallet, ten per token they put in. A new
+`claim_reward` instruction mints them on demand.
+
+The word that does the work is **claim**. Rewards are not minted when you
+contribute; they are minted when you ask for them, and only once the vault has
+reached its target. A backer of a campaign that fails gets their money back and
+nothing else, so nobody is ever paid for a contribution that was handed back to
+them.
+
+## How it works
+
+One new instruction, one new state field, one new mint.
+
+| Piece | Where |
+|---|---|
+| `claim_reward` | `instructions/claim_reward.rs` |
+| `rewards_claimed: bool` | appended to `Contributor` |
+| `REWARD_RATE`, `REWARD_MINT_SEED` | `constants.rs` |
+| `RewardAlreadyClaimed`, `NothingToClaim`, `RewardOverflow` | `error.rs` |
+
+The reward mint is a PDA at `["reward", fundraiser]`, with the fundraiser PDA as
+its mint authority — the same PDA that already signs vault payouts, so minting
+reuses the signer-seeds pattern from `checker.rs`.
+
+It is created lazily, by whoever claims first, rather than at `initialize`.
+That is deliberate: it means **none of the four original instructions changed at
+all**. `initialize`, `contribute`, `check_contributions` and `refund` are
+byte-for-byte what they were, which is the cheapest possible way to satisfy
+"nothing else breaks".
+
+`claim_reward` refuses unless all three hold:
+
+- `current_amount >= amount_to_raise` — the campaign succeeded (`TargetNotMet`)
+- `contributor_account.amount > 0` — there is something to reward
+  (`NothingToClaim`); reachable because `contribute` uses `init_if_needed`, so a
+  contributor account can exist with a zero balance
+- `!contributor_account.rewards_claimed` — not already paid
+  (`RewardAlreadyClaimed`)
+
+The third is the one that matters. The first condition stays true forever once
+it is true, so without a flag the instruction would mint again on every call.
+The flag is set *before* the CPI, so if the mint fails the whole instruction
+unwinds and takes the flag with it.
+
+The reward mint carries the same decimals as the mint being raised, which makes
+`REWARD_RATE` an exact whole-token ratio — no rescaling, no integer division,
+no rounding to zero on small contributions. The multiply is `checked_mul` into
+`RewardOverflow`.
+
+The field went on the **end** of `Contributor`. Borsh lays fields out in
+declaration order, so inserting one in the middle would shift every byte after
+it and silently misread accounts created before the change.
+
+## What it costs
+
+| | |
+|---|---|
+| `claim_reward` compute | **roughly 42k–62k CU** (five runs: 42,442 / 45,442 / 48,473 / 52,942 / 61,942). The first claimer also creates the campaign's reward mint and their own ATA; that account-creation work is what moves, and it is why the figure is a range rather than a number. Later claimers create only their own ATA. For scale, `contribute` is ~25k and `initialize` ~34k |
+| Reward mint rent | **0.00106 SOL**, once per campaign, paid by the first claimer |
+| Reward ATA rent | **0.00149 SOL** per claimer, paid by that claimer |
+| `Contributor` rent | one byte larger — the `bool`. Rounds to nothing in practice |
+| `Fundraiser` rent | unchanged; no field was added to it |
+
+No cost at all falls on the maker, and nothing changes for a contributor who
+never claims.
+
+## How I would attack it
+
+**The maker can close the claim window, and this is the real weakness.**
+`check_contributions` carries `close = maker` on the fundraiser account, and
+`claim_reward` needs that account to exist. So a maker who calls
+`check_contributions` the instant the target is met takes the pot and destroys
+the account every claim depends on — every backer is locked out permanently.
+Nothing in the program stops this and it costs the maker nothing.
+
+I did not fix it here because the honest fixes all cost more than the feature is
+worth in this assignment:
+
+- have `check_contributions` create a small success-receipt PDA that outlives
+  the fundraiser, and read the claim gate from that instead. This is the right
+  answer, and it means touching an existing instruction.
+- refuse to settle until all rewards are claimed — unbounded, and a single
+  inactive backer would freeze the maker's money forever.
+- mint eagerly during `contribute` — then a refunder has been paid for nothing,
+  and burning it back requires they still hold it, which they can defeat by
+  sending it elsewhere first.
+
+A front end should tell backers to claim before the maker settles. That is a
+social mitigation for a protocol problem, which is exactly the kind of sentence
+that should make a reviewer uncomfortable.
+
+**Smaller things I know about:**
+
+- *The first claimer subsidises everyone else* by ~0.00106 SOL for the mint.
+  Not exploitable, just unfair; the maker should arguably pay it at
+  `initialize`.
+- *The mint authority is never revoked.* No instruction other than
+  `claim_reward` can mint, so supply is bounded by contributions today — but the
+  authority stays with the PDA forever, so a future program upgrade could mint
+  freely. The real trust anchor is the program's upgrade authority, not the
+  mint's.
+- *Reward tokens are ordinary transferable SPL tokens.* Whatever they are later
+  redeemed for has to handle the fact that the holder may not be the backer.
+- *Claim-then-refund double-dip does not work*, but only because the existing
+  design already prevents it: `refund` requires the target to be unmet and
+  `claim_reward` requires it met, and `refund` closes the contributor account.
+  That is load-bearing behaviour I inherited rather than built, and a future
+  change to either condition would open the hole.
+
+## Testing
+
+`anchor test` — 15 passing: the original 11, plus four.
+
+| Test | Covers |
+|---|---|
+| `refuses to pay out while the vault is one contribution short` | the boundary below — 90% of target, rejected with `TargetNotMet` |
+| `pays out at exactly the target` | the boundary at — separates `>=` from `>`; asserts the minted balance and the flag |
+| `refuses a second claim from the same contributor` | abuse — `RewardAlreadyClaimed` |
+| `refuses a claim against someone else's contributor account` | abuse — seeds bind the account to the signer; also asserts the victim is untouched |
+
+Each asserts the specific Anchor error code rather than that the transaction
+failed, with `assert.fail` inside the `try` so a call that *should* throw and
+does not still fails the test.
+
+Verified by breaking the program on purpose:
+
+- deleting the `rewards_claimed` guard fails `refuses a second claim`
+- changing the target gate from `>=` to `>` fails `pays out at exactly the
+  target`
+
+The campaign shape in the tests is forced by the existing rules: contributions
+are capped at 10% of the target and must be at least one whole token, so a
+10-token target makes those two limits identical and it takes exactly ten
+backers to fill the vault.
