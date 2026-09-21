@@ -17,6 +17,14 @@ use crate::{
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
 };
 
+
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub percent: u8,
+    pub current_amount: u64,
+}
+
 #[derive(Accounts)]
 pub struct Contribute<'info> {
     #[account(mut)]
@@ -101,10 +109,33 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Update totals only after the transfer succeeds.
+        self.fundraiser.current_amount = self.fundraiser.current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ContributionTooBig)?;
+        self.contributor_account.amount = self.contributor_account.amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::MaximumContributionsReached)?;
 
-        self.contributor_account.amount += amount;
+        // Sticky 25/50/75 marks. Loop all three so one large donation cannot skip a mark.
+        for (percent, bit) in [(25u8, 0b001u8), (50, 0b010), (75, 0b100)] {
+            if self.fundraiser.milestones_fired & bit != 0 {
+                continue;
+            }
+            let threshold = self.fundraiser.amount_to_raise
+                .checked_mul(percent as u64)
+                .ok_or(FundraiserError::ContributionTooBig)?
+                .checked_div(100)
+                .ok_or(FundraiserError::ContributionTooBig)?;
+            if self.fundraiser.current_amount >= threshold {
+                self.fundraiser.milestones_fired |= bit;
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    percent,
+                    current_amount: self.fundraiser.current_amount,
+                });
+            }
+        }
 
         Ok(())
     }
