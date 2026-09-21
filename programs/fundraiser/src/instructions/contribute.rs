@@ -17,6 +17,13 @@ use crate::{
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
 };
 
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub quarter: u8,
+    pub amount: u64,
+}
+
 #[derive(Accounts)]
 pub struct Contribute<'info> {
     #[account(mut)]
@@ -102,9 +109,40 @@ impl<'info> Contribute<'info> {
         transfer(cpi_ctx, amount)?;
 
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
+        // Check which 25% milestones have now been reached.
+        // 0 = below 25%, 1 = 25%+, 2 = 50%+, 3 = 75%+
+        let quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            / self.fundraiser.amount_to_raise;
+
+        for i in 0..quarters.min(3) {
+            let flag = 1u8 << i;
+
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    quarter: (i + 1) as u8,
+                    amount: self.fundraiser.current_amount,
+                });
+            }
+        }
 
         Ok(())
     }

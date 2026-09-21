@@ -490,3 +490,52 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+
+## Feature: Fundraiser Milestones
+
+### What it does
+
+The fundraiser records milestones when a campaign first reaches 25%, 50%, and 75% of its target. Each milestone can fire only once, even if later contributions keep the campaign above the same threshold or one contribution crosses more than one threshold at once.
+
+When a new milestone is reached, the program also emits a `MilestoneReached` event so off-chain clients can react without continuously polling the fundraiser account.
+
+Milestones are intentionally one-way. A later refund does not clear a milestone that was already reached.
+
+### How it works
+
+A `milestones_fired: u8` field is appended to the `Fundraiser` account. Its first three bits represent the 25%, 50%, and 75% milestones.
+
+After a successful contribution updates `current_amount`, the program calculates how many quarters of the target have been reached using checked integer arithmetic:
+
+`current_amount * 4 / amount_to_raise`
+
+It then checks every newly satisfied quarter. If the corresponding bit has not been set yet, the program sets it and emits a `MilestoneReached` event containing the fundraiser address, the quarter number, and the current contributed amount.
+
+The bit is written before the event is emitted. If the instruction later fails, Solana rolls the entire transaction back, including the bit update.
+
+### What it costs
+
+The feature adds one byte to every `Fundraiser` account, so the maker pays a slightly higher rent-exempt balance when the fundraiser is created.
+
+It creates no additional accounts.
+
+Each contribution performs one checked multiplication, one division, and at most three milestone checks. Reaching a new milestone also emits a program event, which adds a small amount of compute and transaction log data.
+
+### How I would attack it
+
+A contributor could try to cross the same threshold repeatedly, or make a contribution that jumps across more than one milestone at once. The on-chain bitmask prevents the first case, while checking all satisfied milestones prevents the second.
+
+The main design trade-off is refunds. `current_amount` can later decrease, but `milestones_fired` does not. A campaign may therefore retain a historical 50% milestone even if its current amount later falls below 50%. This is intentional: milestones represent events that happened, not the campaign's live percentage. A client that needs the current percentage should use the current campaign or vault balance instead of interpreting the milestone bits as present-day state.
+
+Events are also logs rather than persistent state, so a client that wants a complete historical feed must index them rather than assume they can always be queried later.
+
+### Testing
+
+Three milestone tests were added:
+
+- a happy-path test proving that reaching a milestone changes the on-chain bitmask;
+- a boundary test proving that one base unit below 25% does not fire, while exactly 25% does;
+- an idempotency test proving that the 25% milestone cannot fire twice.
+
+The full suite passes with the feature enabled, and the milestone tests fail when the milestone logic is removed.
