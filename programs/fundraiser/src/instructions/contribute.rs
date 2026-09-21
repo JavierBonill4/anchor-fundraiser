@@ -14,7 +14,8 @@ use crate::{
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    PERCENTAGE_SCALER, SECONDS_TO_DAYS,
+    MilestoneReached,
 };
 
 #[derive(Accounts)]
@@ -101,10 +102,55 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Update the fundraiser and contributor accounts with the new amounts.
+        // checked_add, not +=: overflow-checks = true makes a bare + panic on
+        // overflow rather than corrupt state, but a panic is an unhelpful log —
+        // a named error is better, and it's what checkpoint's "money math is
+        // checked" rule asks for.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
+        // Fire milestone events at the quarter marks, once each.
+        //
+        // This computes WHERE we are now, not what changed — current * 4 /
+        // target, multiply before divide so the integer division doesn't
+        // floor to zero. A single contribution here is capped at 10% of the
+        // target (ContributionTooBig, above), so it can only ever cross one
+        // quarter mark at a time, but the loop handles a larger jump anyway
+        // in case that cap ever changes.
+        //
+        // milestones_fired is a one-way bitflag: once set, a bit never
+        // clears, even if current_amount later falls. See the README for
+        // why that's a deliberate tradeoff, not an oversight.
+        let quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            .checked_div(self.fundraiser.amount_to_raise)
+            .ok_or(FundraiserError::Overflow)?;
+
+        for i in 0..quarters.min(3) {
+            let flag = 1u8 << (i as u32);
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    milestone_percent: 25 * (i as u8 + 1),
+                    current_amount: self.fundraiser.current_amount,
+                    amount_to_raise: self.fundraiser.amount_to_raise,
+                });
+            }
+        }
 
         Ok(())
     }
