@@ -231,6 +231,113 @@ describe("fundraiser — contribution window", () => {
   // The window is closed
   // ------------------------------------------------------------------
 
+  it("sets milestone_flags as contributions cross 25%, 50%, 75% thresholds", async () => {
+    // 10% per-contributor cap means one wallet can only reach 10% of target.
+    // Crossing 25% requires 3+ contributors. We use wallet + two fresh keypairs,
+    // each contributing 10% (3_000_000 of 30_000_000 target).
+    const maker = anchor.web3.Keypair.generate();
+    await provider.connection
+      .requestAirdrop(maker.publicKey, anchor.web3.LAMPORTS_PER_SOL)
+      .then(confirm);
+
+    const mint = await createMint(
+      provider.connection,
+      wallet.payer,
+      provider.publicKey,
+      provider.publicKey,
+      6
+    );
+
+    // Three extra contributors, each funded with tokens from the mint authority (wallet)
+    const contributors: anchor.web3.Keypair[] = [
+      anchor.web3.Keypair.generate(),
+      anchor.web3.Keypair.generate(),
+      anchor.web3.Keypair.generate(),
+    ];
+
+    const contributorAtas: anchor.web3.PublicKey[] = [];
+    for (const c of contributors) {
+      await provider.connection
+        .requestAirdrop(c.publicKey, anchor.web3.LAMPORTS_PER_SOL)
+        .then(confirm);
+      const ata = (
+        await getOrCreateAssociatedTokenAccount(
+          provider.connection,
+          wallet.payer,
+          mint,
+          c.publicKey
+        )
+      ).address;
+      await mintTo(
+        provider.connection,
+        wallet.payer,
+        mint,
+        ata,
+        provider.publicKey,
+        TARGET // enough to contribute 10%
+      );
+      contributorAtas.push(ata);
+    }
+
+    const [fundraiser] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
+      program.programId
+    );
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    await program.methods
+      .initialize(new anchor.BN(TARGET), 7)
+      .accountsPartial({
+        maker: maker.publicKey,
+        mintToRaise: mint,
+        fundraiser,
+        vault,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      })
+      .signers([maker])
+      .rpc()
+      .then(confirm);
+
+    let state = await program.account.fundraiser.fetch(fundraiser);
+    assert.strictEqual(state.milestoneFlags, 0, "no milestones before contributions");
+
+    // Each contributor sends 10% of target (3_000_000). After 3 contributions = 30% → 25% flag set.
+    for (let i = 0; i < 3; i++) {
+      const c = contributors[i];
+      const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("contributor"), fundraiser.toBuffer(), c.publicKey.toBuffer()],
+        program.programId
+      );
+      await program.methods
+        .contribute(new anchor.BN(3_000_000)) // 10% of TARGET
+        .accountsPartial({
+          contributor: c.publicKey,
+          mintToRaise: mint,
+          fundraiser,
+          contributorAccount,
+          contributorAta: contributorAtas[i],
+          vault,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([c])
+        .rpc()
+        .then(confirm);
+
+      state = await program.account.fundraiser.fetch(fundraiser);
+      if (i === 1) {
+        // After 2nd contribution = 20%, still below 25%
+        assert.strictEqual(state.milestoneFlags & 0b001, 0, "25% not yet reached at 20%");
+      } else if (i === 2) {
+        // After 3rd contribution = 30%, crossed 25%
+        assert.strictEqual(state.milestoneFlags & 0b001, 1, "25% milestone (bit 0) set at 30%");
+        assert.strictEqual(state.milestoneFlags & 0b110, 0, "50% and 75% not yet set");
+      }
+    }
+  });
+
   it("refuses a contribution once the window has closed", async () => {
     // duration = 0 means zero days of fundraising: the window is shut on arrival.
     const campaign = await openCampaign(0);

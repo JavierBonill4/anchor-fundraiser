@@ -94,7 +94,9 @@ impl<'info> Refund<'info> {
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
         // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        self.fundraiser.current_amount = self.fundraiser.current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(crate::FundraiserError::InvalidAmount)?;
 
         Ok(())
     }
