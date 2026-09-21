@@ -490,3 +490,145 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+---
+
+## Feature: Milestone Unlocks
+
+### What
+
+The fundraiser now tracks three cumulative funding milestones:
+25%, 50%, and 75% of the fundraising target.
+
+Each milestone is represented by one bit in a `u8` bitmask:
+
+* bit 0: 25%
+* bit 1: 50%
+* bit 2: 75%
+
+Milestones are checked on-chain at the end of every successful contribution,
+after `current_amount` has been updated. If a contribution crosses multiple
+thresholds, all applicable milestones are unlocked in the same transaction.
+
+Each milestone also emits an on-chain event when it is unlocked, allowing a
+frontend or other off-chain client to react without having to continuously
+poll the fundraiser balance.
+
+### Why
+
+We chose milestone unlocks because they add meaningful on-chain functionality
+without changing the fundraiser's existing money flows or introducing an
+external dependency.
+
+The fundraiser already maintains the two pieces of information needed to
+determine milestone progress: the fundraising target and the cumulative
+amount raised. This lets the feature build directly on existing authoritative
+on-chain state.
+
+The feature also introduces useful protocol-engineering challenges:
+
+* a contribution can cross a milestone without landing exactly on it;
+* multiple milestones can become satisfied from one contribution;
+* token amounts require checked arithmetic;
+* each milestone must fire only once;
+* the milestone state must remain consistent across contributions and refunds.
+
+### Who Benefits
+
+The feature primarily benefits contributors and applications interacting
+with the fundraiser.
+
+Contributors and potential contributors can see that a campaign has reached
+important funding stages, while a frontend can listen for milestone events
+and display progress, notifications, badges, or other campaign-specific
+behaviour.
+
+Because the milestone state and events are produced by the program itself,
+these signals do not depend on a particular frontend or client implementation.
+
+### Where It Lives
+
+The milestone state lives directly on the `Fundraiser` account as a single
+`u8` field:
+
+```rust
+pub milestones_fired: u8,
+```
+
+The bits represent:
+
+```text
+bit 0 → 25%
+bit 1 → 50%
+bit 2 → 75%
+```
+
+The field is appended to the end of `Fundraiser` rather than inserted into
+the existing account layout.
+
+The milestone logic runs inline at the end of `contribute`, because
+`contribute` is the instruction that increases `current_amount`. No new PDA
+or instruction is required.
+
+### What an Attacker Might Try
+
+A dishonest user might try to:
+
+1. Trigger the same milestone more than once.
+2. Construct a contribution that jumps past a threshold without landing
+   exactly on it.
+3. Attempt to trigger a milestone without making a qualifying contribution.
+4. Refund after reaching a milestone and try to make the milestone disappear
+   or trigger it again later.
+5. Bypass the frontend and submit a custom transaction directly to the
+   program.
+
+The feature is therefore enforced in the on-chain `contribute` instruction,
+rather than relying on TypeScript or frontend behaviour. The bitmask also
+makes milestone activation idempotent: once a bit is set, that milestone
+cannot fire again.
+
+### Refund Decision
+
+Milestones are one-way.
+
+Once a milestone has been reached and its bit has been set, a later refund
+does not unset it, even though the refund can reduce `current_amount`.
+
+For example:
+
+```text
+Contribution reaches 50%
+milestones_fired = 011
+
+Refund reduces current_amount below 50%
+milestones_fired = 011
+```
+
+This is deliberate. A milestone records that the campaign reached a funding
+threshold at some point; it is not intended to be a live representation of
+the current funding percentage.
+
+Therefore:
+
+```text
+000 → 001 → 011 → 111
+```
+
+is valid, while a refund can never cause:
+
+```text
+111 → 011
+011 → 001
+001 → 000
+```
+
+### Design Invariant
+
+The core invariant is:
+
+> Once a milestone bit is set, it remains set for the lifetime of the
+> fundraiser.
+
+This gives us a small feature with a clear on-chain invariant that can be
+directly tested. Removing the milestone logic must cause the milestone tests
+to fail.
