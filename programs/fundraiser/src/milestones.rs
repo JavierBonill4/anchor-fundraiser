@@ -37,7 +37,13 @@ pub fn newly_reached_milestones(
     let mut newly_reached = 0;
 
     for (percentage, bit) in MILESTONES {
-        let threshold = percentage_of(amount_to_raise, percentage)?;
+        // Round up fractional thresholds so a milestone never fires early.
+        let fractional = amount_to_raise
+            .checked_rem(PERCENTAGE_SCALER)?
+            .checked_mul(u64::from(percentage))?
+            .checked_rem(PERCENTAGE_SCALER)?;
+        let threshold =
+            percentage_of(amount_to_raise, percentage)?.checked_add(u64::from(fractional != 0))?;
         if total_amount >= threshold && milestones_reached & bit == 0 {
             newly_reached |= bit;
         }
@@ -67,6 +73,45 @@ mod tests {
 
     #[test]
     fn exact_threshold_is_reached() {
-        assert_eq!(newly_reached_milestones(100, 25, 0), Some(MILESTONE_25));
+        for (percentage, bit) in MILESTONES {
+            let threshold = u64::from(percentage);
+            let history = bit - 1;
+            assert_eq!(
+                newly_reached_milestones(100, threshold - 1, history),
+                Some(0)
+            );
+            assert_eq!(newly_reached_milestones(100, threshold, history), Some(bit));
+        }
+    }
+
+    #[test]
+    fn awkward_target_does_not_reach_milestones_early() {
+        for (threshold, bit) in [(26, MILESTONE_25), (51, MILESTONE_50), (76, MILESTONE_75)] {
+            let history = bit - 1;
+            assert_eq!(
+                newly_reached_milestones(101, threshold - 1, history),
+                Some(0)
+            );
+            assert_eq!(newly_reached_milestones(101, threshold, history), Some(bit));
+        }
+    }
+
+    #[test]
+    fn rounds_up_maximum_target_without_overflow() {
+        for (threshold, bit) in [
+            (4_611_686_018_427_387_904, MILESTONE_25),
+            (9_223_372_036_854_775_808, MILESTONE_50),
+            (13_835_058_055_282_163_712, MILESTONE_75),
+        ] {
+            let history = bit - 1;
+            assert_eq!(
+                newly_reached_milestones(u64::MAX, threshold - 1, history),
+                Some(0)
+            );
+            assert_eq!(
+                newly_reached_milestones(u64::MAX, threshold, history),
+                Some(bit)
+            );
+        }
     }
 }

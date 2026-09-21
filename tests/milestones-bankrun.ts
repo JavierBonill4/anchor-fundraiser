@@ -258,17 +258,19 @@ describe("fundraiser — milestone tracking (bankrun)", () => {
     }
   });
 
-  it("counts the exact rounded-down 25% boundary as reached", async () => {
-    const campaign = await startCampaign(40_000_007);
-    const amounts = [4_000_000, 4_000_000, 2_000_001];
+  it("rounds the 25% threshold up without firing one unit early", async () => {
+    for (const [lastAmount, expectedMask] of [[2_000_001, 0], [2_000_002, 0b001]]) {
+      const campaign = await startCampaign(40_000_007);
+      const amounts = [4_000_000, 4_000_000, lastAmount];
 
-    for (const amount of amounts) {
-      await contribute(campaign, await createContributor(campaign), amount);
+      for (const amount of amounts) {
+        await contribute(campaign, await createContributor(campaign), amount);
+      }
+
+      const state = await fundraiserState(campaign);
+      assert.strictEqual(state.currentAmount.toNumber(), 8_000_000 + lastAmount);
+      assert.strictEqual(state.milestonesReached, expectedMask);
     }
-
-    const state = await fundraiserState(campaign);
-    assert.strictEqual(state.currentAmount.toNumber(), 10_000_001);
-    assert.strictEqual(state.milestonesReached, 0b001);
   });
 
   it("keeps reached milestones after a refund lowers current amount", async () => {
