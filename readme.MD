@@ -490,3 +490,76 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+## My feature: milestone events at 25% / 50% / 75%
+
+### What it does
+
+Every campaign now tracks, on-chain, whether it has crossed the quarter,
+half, and three-quarter marks toward its target. Each mark fires a
+`MilestoneReached` event the first time — and only the first time — a
+contribution pushes `current_amount` past it. A front end can subscribe to
+that event instead of polling the vault balance to show "this campaign just
+crossed 50%."
+
+### How it works
+
+- `Fundraiser` gained one field: `milestones_fired: u8`, appended at the end
+  of the struct so accounts created before this change still deserialize
+  correctly. One bit per mark: bit 0 = 25%, bit 1 = 50%, bit 2 = 75%.
+- The logic lives inline at the end of `contribute()`, after
+  `current_amount` has been updated — not in a new instruction, because the
+  only thing that can move `current_amount` is a contribution, so there is
+  nothing to "claim" separately.
+- `quarters = current_amount * 4 / amount_to_raise` (multiply before
+  divide, `checked_mul`/`checked_div`, both erroring into the new
+  `Overflow` variant). For each mark from 0 up to `quarters.min(3)`, if that
+  bit in `milestones_fired` is not yet set, the program sets it and emits
+  `MilestoneReached { fundraiser, milestone_percent, current_amount,
+  amount_to_raise }`.
+- The bitflag check is what makes this idempotent: calling `contribute`
+  five more times after a mark is crossed cannot re-fire it, because the
+  bit is already set. `tests/milestones.ts` asserts this directly, and I
+  verified it by commenting out the one line that sets the bit and
+  confirming three of the four new tests go red.
+- The two existing `+=` updates in `contribute()` (on `current_amount` and
+  on the contributor's running total) were switched to `checked_add` in the
+  same commit, since they now share the `Overflow` error the milestone math
+  needed anyway — no bare `+`, `-`, or `*` on token amounts anywhere in the
+  function.
+
+### What it costs
+
+- **Rent:** `milestones_fired` adds exactly 1 byte to every `Fundraiser`
+  account. At current rent rates that's on the order of a few hundred
+  lamports, paid once by the maker at `initialize` time — not per
+  contribution, and not something a contributor ever sees.
+- **Compute:** on a local run, a plain `contribute()` (no milestone crossed)
+  consumed 29,732 compute units against Anchor's 200,000 budget, and the
+  milestone math on top of that is two checked arithmetic ops plus a loop
+  over at most 3 flags (in practice at most 1 — see below), a few hundred
+  CU at most. No new accounts are created or closed, so there's no extra
+  rent or CPI beyond the event emission itself.
+
+### How I would attack it
+
+The honest weak point: `milestones_fired` is a **one-way** flag. It tracks
+whatever `current_amount` reached at some point in the past, not what the
+vault currently holds. `current_amount` only ever decreases via `refund`,
+and `refund` can only run once the window has closed — at which point
+`contribute` (and so this milestone logic) can never run again — so a mark
+can't flicker on and off within a single campaign's active window. But if a
+campaign fails and every contributor refunds, `milestones_fired` still
+shows whichever marks were reached while contributions were flowing in,
+even though the vault is back to zero. A front end that reads
+`milestones_fired` as "the campaign is currently at least 25% funded"
+rather than "the campaign reached 25% at some point" would be showing a
+stale, overly generous picture. That's a deliberate choice — a mark that
+flickers is arguably worse than one that's generous — but it means a UI
+should always read the vault balance for a *live* percentage, and treat
+`milestones_fired` as a history flag, not a current-state one.
+
+The flag itself cannot be forged directly: it's a private field on a PDA
+account that only this program's instructions can write, so there's no
+instruction that lets a contributor or the maker set it by hand — the only
+way to move it is to actually move tokens into the vault via `contribute`.
