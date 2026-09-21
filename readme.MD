@@ -490,3 +490,63 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Reward token
+
+### What it does
+
+Every contribution earns the contributor reward tokens, minted at 1 whole reward token for every 1 whole token they contribute, and the reward is burned again if they take a refund. The reward mint is created by the program when the fundraiser is initialized, and the Fundraiser PDA is its only mint authority, so rewards can only ever be minted by contributing. The reward mint always has different decimals from the raise mint (the raise mint's decimals plus 3), so amounts are always scaled and never copied across raw. On a successful campaign contributors keep their rewards; on a failed one they must hand the reward back to get their money back.
+
+### How it works
+
+**State.** Nothing is added to `Fundraiser` or `Contributor`, so their layout is unchanged.
+
+- `reward_mint` is a PDA derived from `[b"reward_mint", fundraiser]`. It is derived, not stored.
+- Its decimals are the raise mint's decimals plus `REWARD_DECIMALS_OFFSET` (3, in `constants.rs`), so the two can never match.
+- A contributor's reward balance lives in their own reward token account. `Contributor.amount` is still what decides how much reward a refund burns.
+
+**Which instruction does what, and when.**
+
+| Instruction | What happens to the reward | When it can run |
+| --- | --- | --- |
+| `initialize` | Creates the reward mint with the Fundraiser PDA as mint authority, and checks that its decimals differ from the raise mint's | Once, when the fundraiser is created |
+| `contribute` | Creates the contributor's reward token account if needed, then mints `scale_to_reward(amount)` to it, signed by the Fundraiser PDA, after the vault transfer succeeds | Only while the fundraising window is open (the existing duration check) |
+| `check_contributions` | Nothing. Contributors keep their rewards | Unchanged |
+| `refund` | Burns `scale_to_reward(contributor_account.amount)` from the contributor's reward account before paying anything back, and fails with `RewardBalanceTooLow` if they do not hold enough | Only after the deadline with the target unmet (the existing checks) |
+
+**Scaling.** `scale_to_reward(raise_amount, raise_decimals, reward_decimals)` in `reward.rs` multiplies or divides by 10 to the power of the difference in decimals, using checked `u128` math, and returns `RewardOverflow` if the result does not fit in a `u64`. Because the reward mint always has more decimals, scaling is an exact multiplication: what a contribution mints is exactly what its refund burns, with no rounding dust. For example, 1_000_000 raw units of a 6 decimal raise mint (1 token) scale to 1_000_000_000 raw units of the 9 decimal reward mint (also 1 token). Both decimals are read from the mint accounts rather than assumed.
+
+**New errors.** `RewardOverflow`, `InvalidRewardDecimals`, `RewardBalanceTooLow`.
+
+### What it costs
+
+**Extra accounts per instruction**
+
+| Instruction | Extra accounts |
+| --- | --- |
+| `initialize` | 1 (`reward_mint`) |
+| `contribute` | 3 (`reward_mint`, `contributor_reward_ata`, `associated_token_program`) |
+| `refund` | 2 (`reward_mint`, `contributor_reward_ata`) |
+| `check_contributions` | 0 |
+
+**Extra rent** (at the default rent parameters)
+
+- Reward mint: 82 bytes, 1,461,600 lamports (about 0.00146 SOL), paid once per fundraiser by the maker. It cannot be recovered, because SPL mints cannot be closed.
+- Reward token account: 165 bytes, 2,039,280 lamports (about 0.00204 SOL), paid by the contributor on their first contribution. A refund does not close it; the contributor can close it themselves once it is empty.
+- `Fundraiser` and `Contributor` accounts: no change.
+
+**Extra compute.** Not yet measured, so no numbers are quoted here. The additions are: in `initialize`, creating and initializing the mint plus one PDA derivation; in `contribute`, one extra `mint_to` CPI and one PDA derivation, plus creating the reward token account on a contributor's first contribution (likely the largest single addition); in `refund`, one extra `burn` CPI and one PDA derivation. `check_contributions` is unchanged. To get real figures, read the `consumed ... compute units` lines in the program logs from `anchor test`.
+
+### How you would attack it
+
+- **Mint rewards without paying.** Only the Fundraiser PDA can mint, and the program signs for it only inside `contribute`, after the vault transfer, for the amount just transferred. The transfer and the mint are in one transaction, so if either fails both roll back. Contributions cannot be recycled for extra reward, because `contribute` closes at the deadline and `refund` only opens at it, so the two windows never overlap.
+- **Point the mint or burn at the wrong account.** `reward_mint` is constrained by seeds tied to this fundraiser, so any other mint fails. `contributor_reward_ata` must be the contributor's own associated token account for that mint, so nobody can direct a mint or burn at another wallet's account.
+- **Keep the reward and take the money.** `refund` burns before it pays, and the burn is signed by the contributor, so it can only take from their own account. Moving the reward away does not help: the refund reverts with `RewardBalanceTooLow` and no money moves. `tests/time-window-bankrun.ts` covers both sides of this.
+- **Freeze someone's reward to block their refund.** The reward mint is created without a freeze authority, so no one can freeze a reward account.
+- **Break the decimals math.** The reward decimals come from the raise mint, and a `require!` rejects any case where they are equal as a backstop. Scaling uses checked `u128` math and the reward decimals are always larger, so there is no rounding to exploit. A raise mint with 20 or more decimals is rejected by `initialize` (the existing minimum amount check overflows), so it never gets as far as a reward.
+- **Overflow the reward amount.** A maker can choose a target so large that a permitted contribution, scaled up, no longer fits in a `u64`. `contribute` then fails with `RewardOverflow`, and because the transfer is in the same transaction it is rolled back, so no funds are at risk. Only that campaign is affected.
+- **Revive the mint authority after a success.** `check_contributions` closes the Fundraiser, so the reward mint's authority becomes an address with no account. Nothing can mint again today, because `initialize` cannot run twice for the same maker (the old vault and reward mint already exist). If re-initialization is ever allowed, the old reward mint would get a live authority again, so revisit this first.
+- **Sell the reward, strand the refund.** The reward is an ordinary transferable token. If a contributor sells it, the buyer cannot redeem it for anything, and the seller cannot refund until they buy it back. That is the trade-off that stops anyone keeping both the reward and the money.
+- **Known issue in the base program (not caused by the reward token).** Success is decided from `vault.amount`, and anyone can transfer tokens straight into a vault. After the deadline, a donation that lifts the vault to the target makes `refund` fail with `TargetMet`, while `check_contributions` lets the maker withdraw everything, including contributors' money. The fix is to compare `fundraiser.current_amount` instead of the vault balance.

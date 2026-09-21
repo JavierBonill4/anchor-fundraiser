@@ -1,18 +1,10 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, 
-    SECONDS_TO_DAYS
+    reward::scale_to_reward,
+    state::{Contributor, Fundraiser},
+    FundraiserError, REWARD_MINT_SEED, SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -47,16 +39,27 @@ pub struct Refund<'info> {
         associated_token::authority = fundraiser
     )]
     pub vault: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [REWARD_MINT_SEED, fundraiser.key().as_ref()],
+        bump,
+    )]
+    pub reward_mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        associated_token::mint = reward_mint,
+        associated_token::authority = contributor,
+    )]
+    pub contributor_reward_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
-
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
- 
+
         require!(
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 >= self.fundraiser.duration as i64,
@@ -67,6 +70,27 @@ impl<'info> Refund<'info> {
             self.vault.amount < self.fundraiser.amount_to_raise,
             crate::FundraiserError::TargetMet
         );
+
+                // Take back the reward this contribution earned. The decimals come from the
+        // mint accounts, exactly as in contribute, so mint and burn always agree.
+        let reward_amount = scale_to_reward(
+            self.contributor_account.amount,
+            self.mint_to_raise.decimals,
+            self.reward_mint.decimals,
+        )?;
+
+        
+        require!(
+            self.contributor_reward_ata.amount >= reward_amount,
+            FundraiserError::RewardBalanceTooLow
+        );
+
+        let burn_accounts = Burn {
+            mint: self.reward_mint.to_account_info(),
+            from: self.contributor_reward_ata.to_account_info(),
+            authority: self.contributor.to_account_info(),
+        };
+        burn(CpiContext::new(self.token_program.key(), burn_accounts), reward_amount)?;
 
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
@@ -94,7 +118,11 @@ impl<'info> Refund<'info> {
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
         // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(ProgramError::InvalidArgument)?;
 
         Ok(())
     }

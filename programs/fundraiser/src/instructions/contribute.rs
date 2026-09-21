@@ -1,20 +1,14 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{mint_to, transfer, Mint, MintTo, Token, TokenAccount, Transfer},
 };
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    reward::scale_to_reward,
+    state::{Contributor, Fundraiser},
+    FundraiserError, ANCHOR_DISCRIMINATOR, MAX_CONTRIBUTION_PERCENTAGE, PERCENTAGE_SCALER,
+    REWARD_MINT_SEED, SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -49,13 +43,26 @@ pub struct Contribute<'info> {
         associated_token::authority = fundraiser
     )]
     pub vault: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [REWARD_MINT_SEED, fundraiser.key().as_ref()],
+        bump,
+    )]
+    pub reward_mint: Account<'info, Mint>,
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        associated_token::mint = reward_mint,
+        associated_token::authority = contributor,
+    )]
+    pub contributor_reward_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
-
         // Check that the contribution is at least one whole token.
         //
         // The previous form was `1_u8.pow(decimals)`, and 1 raised to any power is 1
@@ -68,7 +75,9 @@ impl<'info> Contribute<'info> {
 
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount
+                <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                    / PERCENTAGE_SCALER,
             FundraiserError::ContributionTooBig
         );
 
@@ -82,8 +91,12 @@ impl<'info> Contribute<'info> {
 
         // Check if the maximum contributions per contributor have been reached
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            (self.contributor_account.amount
+                <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                    / PERCENTAGE_SCALER)
+                && (self.contributor_account.amount + amount
+                    <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                        / PERCENTAGE_SCALER),
             FundraiserError::MaximumContributionsReached
         );
 
@@ -101,10 +114,42 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+                // Mint the matching reward. Both decimals come from the mint accounts,
+        // not from an assumed offset, so the 1:1 whole token rate holds regardless.
+        let reward_amount = scale_to_reward(
+            amount,
+            self.mint_to_raise.decimals,
+            self.reward_mint.decimals,
+        )?;
 
-        self.contributor_account.amount += amount;
+        // The fundraiser PDA is the reward mint's authority, so it signs.
+        let signer_seeds: [&[&[u8]]; 1] = [&[
+            b"fundraiser".as_ref(),
+            self.fundraiser.maker.as_ref(),
+            &[self.fundraiser.bump],
+        ]];
+
+        let mint_accounts = MintTo {
+            mint: self.reward_mint.to_account_info(),
+            to: self.contributor_reward_ata.to_account_info(),
+            authority: self.fundraiser.to_account_info(),
+        };
+        let mint_ctx =
+            CpiContext::new_with_signer(self.token_program.key(), mint_accounts, &signer_seeds);
+        mint_to(mint_ctx, reward_amount)?;
+
+        // Update the fundraiser and contributor accounts with the new amounts
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
 
         Ok(())
     }
