@@ -490,3 +490,84 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: funding milestones
+
+Branch `feat/funding-milestones`.
+
+### What it does
+
+The campaign notices when its vault crosses 25%, 50% and 75% of the target.
+Each mark fires once: the program emits a `MilestoneReached` event for front
+ends and indexers, and records the mark on the fundraiser account. A guard
+instruction, `check_milestone`, lets a transaction require that a mark has
+been passed before the rest of it runs.
+
+### How it works
+
+**State.** One byte appended to the end of `Fundraiser`, so no existing
+field moves. Initialized to `0`.
+
+```rust
+pub milestones_fired: u8,   // bit 0 = 25%, bit 1 = 50%, bit 2 = 75%
+```
+
+**Where it fires.** At the end of `contribute`, after the transfer succeeds
+and `current_amount` is updated. Nothing else moves the total upward.
+
+**The check.** `Fundraiser::milestones_reached()` returns the mask of every
+mark satisfied right now: milestone `k` when
+`current_amount * 4 >= amount_to_raise * (k + 1)`, cross-multiplied in `u128`
+so there is no division, rounding or overflow. `contribute` takes
+`reached & !fired`, sets each bit, and emits one event per bit.
+
+This loop is the answer to the trap. A deposit can take the vault from 45% to
+55% without ever being *at* 50%; the question is "which marks are satisfied
+and unfired", not "did this deposit land on a boundary". Three separate `if`s
+would miss it.
+
+**Refund does not un-fire.** `refund` lowers `current_amount`, but it is only
+reachable after the deadline, when `contribute` is already closed. A set bit
+means "reached while live", which the event has already announced. Deliberate.
+
+**The guard.** `check_milestone(index)` reads the `fundraiser` PDA and fails
+with `MilestoneNotReached` if the bit is clear or `InvalidMilestone` if
+`index >= 3`. One account, no signer, no mutation, no CPI.
+
+**Errors added.** `InvalidMilestone`, `MilestoneNotReached`.
+
+### What it costs
+
+- **Rent.** One byte on every `Fundraiser`, about 7,000 lamports. No new
+  accounts.
+- **Compute.** Three `u128` compares and at most three `emit!`s over a
+  campaign's whole life. Measured with bankrun, a successful `contribute`
+  went from 26,732 to 29,885 CU; instructions that never reach the loop rose
+  by a similar amount, so most of that is the larger binary, not the loop.
+- **Transaction size.** Unchanged for `contribute`. `check_milestone` adds
+  one account and one byte of data where it is bundled.
+
+### How you would attack it
+
+- **Fire, then refund.** Pass 25%, miss the deadline, refund. The bit stays
+  set on a failed campaign. Cosmetic today, because nothing pays out on a bit.
+  If a future feature attaches money to a milestone, a bit that never clears
+  becomes a claim that can never be revoked. That feature must gate on
+  `current_amount` at payout time, never on the bit.
+- **Overshoot.** `contribute` does not stop at the target, so all three bits
+  can be set on a campaign past 100%. Reading "75% fired" as "not yet funded"
+  would be wrong.
+- **Missed events.** The event cannot be forged, but an offline client will
+  miss it. The bitmask on the account is the source of truth.
+- **The guard is a snapshot.** It proves a mark was passed when the
+  transaction ran, not that the vault still holds that much.
+
+### Tests
+
+`tests/milestones.ts` adds four cases on one campaign: nothing fires at 20%,
+the 25% mark fires at exactly a quarter, a 45% to 55% jump fires the 50% mark
+it never landed on, and `check_milestone` rejects an unfired mark and an
+out-of-range index while accepting a fired one. Abuse cases assert on the
+program's own error codes.
