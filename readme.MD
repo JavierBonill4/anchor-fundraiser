@@ -490,3 +490,52 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+Milestone Tracking
+
+What it does
+
+The fundraiser now records progress milestones at 25%, 50%, and 75% of the fundraising target. Each milestone is recorded only once. The program also emits a MilestoneReached event so that front ends and indexers can react when a campaign crosses a new threshold.
+
+How it works
+
+A milestones_fired: u8 bitmask is stored in the Fundraiser account:
+
+* bit 0 represents 25%;
+* bit 1 represents 50%;
+* bit 2 represents 75%.
+
+The milestone calculation runs at the end of the contribute instruction, after the token transfer succeeds and current_amount is updated. The program calculates the number of completed quarters using checked integer arithmetic:
+
+current_amount.checked_mul(4)? / amount_to_raise
+
+It then sets every newly reached flag and emits one MilestoneReached event for each new threshold. Existing flags prevent the same milestone from being recorded again.
+
+Milestones are intentionally one-way. A later refund does not remove a previously reached milestone because the flag represents historical campaign progress.
+
+What it costs
+
+The feature adds one byte to every Fundraiser account, causing a very small increase in rent. It creates no additional accounts and requires no additional signatures or PDA derivations.
+
+Each contribution performs one checked multiplication and a loop of at most three iterations. Newly reached milestones also add event logging compute costs. Contributions that do not cross a new threshold only perform the flag checks.
+
+How I would attack it
+
+The milestone calculation uses the program’s current_amount, while the vault balance is the source of truth for the actual token balance. A user can transfer tokens directly to the vault without using the contribute instruction. Those tokens would increase the vault balance but would not update current_amount or trigger milestones.
+
+The existing 10% per-wallet contribution limit can also be bypassed by one person controlling multiple wallets. The milestone feature does not create this weakness, but such a user could influence when campaign milestones are reached.
+
+Events are transaction logs and should not be treated as permanent state. A front end should read milestones_fired for historical milestones and the vault balance for the live fundraising percentage.
+
+Testing
+
+The milestone test suite covers:
+
+* no milestone below 25%;
+* the exact 25% boundary;
+* the 50% and 75% milestones;
+* rejection of a single contribution above 10%;
+* rejection of multiple contributions from one wallet above the cumulative 10% limit;
+* unchanged flags after an already reached milestone;
+* unchanged milestone state after a rejected transaction.
+
+All original fundraiser tests continue to pass.
