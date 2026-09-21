@@ -24,7 +24,6 @@ pub struct CheckContributions<'info> {
         mut,
         seeds = [b"fundraiser".as_ref(), maker.key().as_ref()],
         bump = fundraiser.bump,
-        close = maker,
     )]
     pub fundraiser: Account<'info, Fundraiser>,
     #[account(

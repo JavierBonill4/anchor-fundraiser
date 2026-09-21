@@ -16,6 +16,8 @@ pub enum FundraiserError {
     FundraiserNotEnded,
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
+    #[msg("The receipt has already been claimed")]
+    ReceiptAlreadyClaimed,
     #[msg("Invalid total amount. i should be bigger than 3")]
     InvalidAmount
 }
