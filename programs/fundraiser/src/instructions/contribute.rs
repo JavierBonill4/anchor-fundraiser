@@ -106,6 +106,12 @@ impl<'info> Contribute<'info> {
 
         self.contributor_account.amount += amount;
 
+        // Recompute from scratch: contributing can only add milestone bits.
+        self.fundraiser.milestones = crate::state::Fundraiser::milestones_for(
+            self.fundraiser.current_amount,
+            self.fundraiser.amount_to_raise,
+        )?;
+
         Ok(())
     }
 }
