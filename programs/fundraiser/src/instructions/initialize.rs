@@ -2,7 +2,9 @@ use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken, 
     token::{
+        mint_to, 
         Mint, 
+        MintTo, 
         Token, 
         TokenAccount
     }
@@ -32,6 +34,31 @@ pub struct Initialize<'info> {
         associated_token::authority = fundraiser,
     )]
     pub vault: Account<'info, TokenAccount>,
+    /// The receipt (badge) mint this campaign issues to contributors. Derived
+    /// from the fundraiser's own seeds, so callers resolve it without ever
+    /// seeing it: PDA = [b"reward-mint", fundraiser]. Zero decimals — a badge,
+    /// not a currency. Its only mint authority is the fundraiser PDA, and it
+    /// is never frozen, so badges stay transferable. `mint_to` below gives
+    /// supply 1 to the maker; `claim_receipt` is the only other mint.
+    #[account(
+        init,
+        payer = maker,
+        seeds = [b"reward-mint", fundraiser.key().as_ref()],
+        bump,
+        mint::decimals = 0,
+        mint::authority = fundraiser,
+        mint::freeze_authority = fundraiser,
+    )]
+    pub reward_mint: Account<'info, Mint>,
+    /// The maker's ATA for the badge mint, holding its copy of supply 1.
+    /// Derived from `reward_mint`, so callers resolve it from the seeds too.
+    #[account(
+        init,
+        payer = maker,
+        associated_token::mint = reward_mint,
+        associated_token::authority = maker,
+    )]
+    pub maker_receipt_ata: Account<'info, TokenAccount>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -62,9 +89,32 @@ impl<'info> Initialize<'info> {
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            // The badge mint exists from day one; nothing has been claimed yet.
+            reward_mint: self.reward_mint.key(),
+            receipts_minted: 0,
         });
-        
+
+        // Give the maker supply 1 of the badge mint, so a one-person campaign
+        // (target of one whole token, maker is the only eligible contributor)
+        // can still be fully resolved on chain.
+        let cpi_accounts = MintTo {
+            mint: self.reward_mint.to_account_info(),
+            to: self.maker_receipt_ata.to_account_info(),
+            authority: self.fundraiser.to_account_info(),
+        };
+        let signer_seeds: [&[&[u8]]; 1] = [&[
+            b"fundraiser".as_ref(),
+            self.maker.to_account_info().key.as_ref(),
+            &[self.fundraiser.bump],
+        ]];
+        let cpi_ctx = CpiContext::new_with_signer(
+            self.token_program.key(),
+            cpi_accounts,
+            &signer_seeds,
+        );
+        mint_to(cpi_ctx, 1)?;
+
         Ok(())
     }
 }
