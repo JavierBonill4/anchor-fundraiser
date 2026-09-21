@@ -86,7 +86,7 @@ impl<'info> Contribute<'info> {
                 && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
             FundraiserError::MaximumContributionsReached
         );
-
+        let is_first_contribution = self.contributor_account.amount == 0;
         // Transfer the funds from the contributor to the vault.
         // As of Anchor 1.0 a CpiContext takes the program's *address*, not its
         // AccountInfo.
@@ -102,10 +102,25 @@ impl<'info> Contribute<'info> {
         transfer(cpi_ctx, amount)?;
 
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+       // Update the fundraiser and contributor accounts with the new amounts
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
 
-        self.contributor_account.amount += amount;
-
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+        if is_first_contribution {
+            self.fundraiser.contributor_count = self
+            .fundraiser
+            .contributor_count
+            .checked_add(1)
+            .ok_or(FundraiserError::Overflow)?;
+        }
         Ok(())
     }
 }
