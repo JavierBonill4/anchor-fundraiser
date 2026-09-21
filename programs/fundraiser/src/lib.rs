@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW");
+declare_id!("HmhFiSqotDr9i9U3WCeJoRjsHYRhXjXbvYdfjNJH4B7P");
 
 mod state;
 mod instructions;
@@ -40,6 +40,11 @@ pub mod fundraiser {
 
         ctx.accounts.refund()?;
 
+        Ok(())
+    }
+
+    pub fn issue_receipt(ctx: Context<IssueReceipt>) -> Result<()> {
+        ctx.accounts.issue_receipt()?;
         Ok(())
     }
 }
