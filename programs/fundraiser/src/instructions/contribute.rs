@@ -1,10 +1,15 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{
+        mint_to,
+        Mint, 
+        MintTo,
+        transfer, 
+        Token, 
+        TokenAccount, 
+        Transfer
+    }
 };
 
 use crate::{
@@ -51,6 +56,16 @@ pub struct Contribute<'info> {
     pub vault: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+    #[account(mut, address = fundraiser.reward_mint)]
+    pub reward_mint: Account<'info, Mint>,
+    #[account(
+        init_if_needed,
+        payer = contributor,
+        associated_token::mint = reward_mint,
+        associated_token::authority = contributor
+    )]
+    pub contributor_reward_ata: Account<'info, TokenAccount>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
 impl<'info> Contribute<'info> {
@@ -101,10 +116,46 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
+        // Calculate early bird reward
+        let remaining_amount = self.fundraiser.amount_to_raise
+            .checked_sub(self.fundraiser.current_amount)
+            .ok_or(FundraiserError::MathOverflow)?;
+        
+        let reward_amount = (amount as u128)
+            .checked_mul(remaining_amount as u128)
+            .ok_or(FundraiserError::MathOverflow)?
+            .checked_div(self.fundraiser.amount_to_raise as u128)
+            .ok_or(FundraiserError::MathOverflow)? as u64;
+
+        if reward_amount > 0 {
+            let signer_seeds: [&[&[u8]]; 1] = [&[
+                b"fundraiser".as_ref(),
+                self.fundraiser.maker.as_ref(),
+                &[self.fundraiser.bump],
+            ]];
+
+            let mint_to_accounts = MintTo {
+                mint: self.reward_mint.to_account_info(),
+                to: self.contributor_reward_ata.to_account_info(),
+                authority: self.fundraiser.to_account_info(),
+            };
+
+            let cpi_ctx_mint = CpiContext::new_with_signer(
+                self.token_program.key(),
+                mint_to_accounts,
+                &signer_seeds,
+            );
+
+            mint_to(cpi_ctx_mint, reward_amount)?;
+        }
+
         // Update the fundraiser and contributor accounts with the new amounts
         self.fundraiser.current_amount += amount;
 
         self.contributor_account.amount += amount;
+        self.contributor_account.reward_amount = self.contributor_account.reward_amount
+            .checked_add(reward_amount)
+            .ok_or(FundraiserError::MathOverflow)?;
 
         Ok(())
     }
