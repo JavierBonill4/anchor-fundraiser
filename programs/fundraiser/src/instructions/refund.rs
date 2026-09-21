@@ -32,7 +32,13 @@ pub struct Refund<'info> {
         mut,
         seeds = [b"contributor", fundraiser.key().as_ref(), contributor.key().as_ref()],
         bump,
-        close = contributor,
+        // feat/contribution-receipts: this account used to be closed here.
+        // It now survives the refund, so the claimed flag on it stays honest:
+        // a record that died would let a refunded contributor re-contribute
+        // later and mint a second badge. Instead the record is emptied —
+        // amount is zeroed by the handler — and stays behind at its full size.
+        // It is inert: refund runs a second time and just fails the NothingTo
+        // Refund check, and contribute re-activates it if the owner returns.
     )]
     pub contributor_account: Account<'info, Contributor>,
     #[account(
@@ -68,6 +74,17 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::TargetMet
         );
 
+        // feat/contribution-receipts: the record is emptied rather than
+        // closed, so the claimed flag below it survives the refund. This
+        // guard keeps a second refund an explicit failure instead of a silent
+        // zero-token transfer: a record exists only if `contribute` (or
+        // `claim_receipt`'s init_if_needed) created it, and its amount is
+        // positive exactly while something remains to refund.
+        require!(
+            self.contributor_account.amount > 0,
+            crate::FundraiserError::NothingToRefund
+        );
+
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
         // As of Anchor 1.0 a CpiContext takes the program's address, not its AccountInfo.
@@ -93,8 +110,17 @@ impl<'info> Refund<'info> {
         // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        // Update the fundraiser state by reducing the amount contributed.
+        // feat/contribution-receipts: the Contributor record is emptied, not
+        // closed, so its claimed flag survives the refund — see the account
+        // constraint above.
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_sub(self.contributor_account.amount)
+            .ok_or(crate::FundraiserError::NothingToRefund)?;
+
+        self.contributor_account.amount = 0;
 
         Ok(())
     }
