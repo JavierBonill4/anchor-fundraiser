@@ -48,6 +48,14 @@ pub struct CheckContributions<'info> {
 impl<'info> CheckContributions<'info> {
     pub fn check_contributions(&self) -> Result<()> {
         
+        // A cancelled campaign is being refunded, not claimed. Without this a
+        // maker could cancel, wait for the vault to cross the target from
+        // contributions already in flight, and still sweep the funds.
+        require!(
+            !self.fundraiser.cancelled,
+            FundraiserError::FundraiserCancelled
+        );
+
         // Check if the target amount has been met
         require!(
             self.vault.amount >= self.fundraiser.amount_to_raise,

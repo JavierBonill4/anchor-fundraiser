@@ -36,6 +36,15 @@ pub mod fundraiser {
         Ok(())
     }
 
+    /// Lets the maker call off their own campaign early, opening refunds
+    /// immediately instead of making contributors wait out the duration.
+    pub fn cancel(ctx: Context<Cancel>) -> Result<()> {
+
+        ctx.accounts.cancel()?;
+
+        Ok(())
+    }
+
     pub fn refund(ctx: Context<Refund>) -> Result<()> {
 
         ctx.accounts.refund()?;
