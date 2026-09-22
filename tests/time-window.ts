@@ -25,6 +25,7 @@ import { assert, AssertionError } from "chai";
  * day it is created, and `duration = 0` is a closed one. That is enough to pin the
  * comparison from both sides.
  */
+
 describe("fundraiser — contribution window", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
@@ -39,7 +40,12 @@ describe("fundraiser — contribution window", () => {
 
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
-    await provider.connection.confirmTransaction({ signature, ...block });
+
+    await provider.connection.confirmTransaction({
+      signature,
+      ...block,
+    });
+
     return signature;
   };
 
@@ -51,16 +57,24 @@ describe("fundraiser — contribution window", () => {
    */
   const errorCodeOf = (err: any): string => {
     if (err instanceof AssertionError) throw err;
-    if (err?.error?.errorCode?.code) return err.error.errorCode.code;
+
+    if (err?.error?.errorCode?.code) {
+      return err.error.errorCode.code;
+    }
+
     const text = `${err?.message ?? ""} ${JSON.stringify(err?.logs ?? [])}`;
     const match = text.match(/Error Code: (\w+)/);
+
     return match ? match[1] : text.slice(0, 300);
   };
 
-  /** Case-insensitive because Anchor's IDL camelCases error names while the
-   *  runtime's parsed AnchorError reports them in PascalCase. */
+  /**
+   * Case-insensitive because Anchor's IDL camelCases error names while the
+   * runtime's parsed AnchorError reports them in PascalCase.
+   */
   const assertErrorIs = (err: any, expected: string, why: string) => {
     const actual = errorCodeOf(err);
+
     assert.strictEqual(
       actual.toLowerCase(),
       expected.toLowerCase(),
@@ -72,6 +86,8 @@ describe("fundraiser — contribution window", () => {
     maker: anchor.web3.Keypair;
     mint: anchor.web3.PublicKey;
     fundraiser: anchor.web3.PublicKey;
+    rewardMint: anchor.web3.PublicKey;
+    rewardVault: anchor.web3.PublicKey;
     vault: anchor.web3.PublicKey;
     contributorAccount: anchor.web3.PublicKey;
     contributorAta: anchor.web3.PublicKey;
@@ -79,11 +95,13 @@ describe("fundraiser — contribution window", () => {
 
   /**
    * Creates a fresh maker, mint and fundraiser so each test is independent.
+   *
    * `durationDays` is what the whole file turns on: 7 is an open window today,
    * 0 is a window that closed the moment it opened.
    */
   const openCampaign = async (durationDays: number): Promise<Campaign> => {
     const maker = anchor.web3.Keypair.generate();
+
     await provider.connection
       .requestAirdrop(maker.publicKey, anchor.web3.LAMPORTS_PER_SOL)
       .then(confirm);
@@ -118,28 +136,53 @@ describe("fundraiser — contribution window", () => {
       [Buffer.from("fundraiser"), maker.publicKey.toBuffer()],
       program.programId
     );
+
     const [contributorAccount] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+      [
+        Buffer.from("contributor"),
+        fundraiser.toBuffer(),
+        provider.publicKey.toBuffer(),
+      ],
       program.programId
     );
+
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+    const rewardMint = anchor.web3.Keypair.generate();
+
+    const rewardVault = getAssociatedTokenAddressSync(
+      rewardMint.publicKey,
+      fundraiser,
+      true
+    );
+
     await program.methods
-      .initialize(new anchor.BN(TARGET), durationDays)
+      .initialize(new anchor.BN(TARGET), durationDays, new anchor.BN(TARGET))
       .accountsPartial({
         maker: maker.publicKey,
         mintToRaise: mint,
         fundraiser,
+        rewardMint: rewardMint.publicKey,
         vault,
+        rewardVault,
         systemProgram: anchor.web3.SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
-      .signers([maker])
+      .signers([maker, rewardMint])
       .rpc()
       .then(confirm);
 
-    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
+    return {
+      maker,
+      mint,
+      fundraiser,
+      rewardMint: rewardMint.publicKey,
+      rewardVault,
+      vault,
+      contributorAccount,
+      contributorAta,
+    };
   };
 
   const contribute = (c: Campaign, amount: number) =>
@@ -190,10 +233,20 @@ describe("fundraiser — contribution window", () => {
     }
 
     // Assert on state, not on the call returning. The money has to have moved.
-    const vault = await provider.connection.getTokenAccountBalance(campaign.vault);
-    assert.strictEqual(vault.value.amount, String(CONTRIBUTION), "vault should hold the contribution");
+    const vault = await provider.connection.getTokenAccountBalance(
+      campaign.vault
+    );
 
-    const fundraiser = await program.account.fundraiser.fetch(campaign.fundraiser);
+    assert.strictEqual(
+      vault.value.amount,
+      String(CONTRIBUTION),
+      "vault should hold the contribution"
+    );
+
+    const fundraiser = await program.account.fundraiser.fetch(
+      campaign.fundraiser
+    );
+
     assert.strictEqual(
       fundraiser.currentAmount.toString(),
       String(CONTRIBUTION),
@@ -216,15 +269,26 @@ describe("fundraiser — contribution window", () => {
 
     try {
       await refund(campaign);
+
       assert.fail("a refund on day 0 of a 7 day fundraiser must be refused");
     } catch (err) {
-      assertErrorIs(err, "FundraiserNotEnded",
-        "the refund should be refused because the window has not closed");
+      assertErrorIs(
+        err,
+        "FundraiserNotEnded",
+        "the refund should be refused because the window has not closed"
+      );
     }
 
     // And nothing moved.
-    const vault = await provider.connection.getTokenAccountBalance(campaign.vault);
-    assert.strictEqual(vault.value.amount, String(CONTRIBUTION), "vault must be untouched");
+    const vault = await provider.connection.getTokenAccountBalance(
+      campaign.vault
+    );
+
+    assert.strictEqual(
+      vault.value.amount,
+      String(CONTRIBUTION),
+      "vault must be untouched"
+    );
   });
 
   // ------------------------------------------------------------------
@@ -237,13 +301,24 @@ describe("fundraiser — contribution window", () => {
 
     try {
       await contribute(campaign, CONTRIBUTION);
+
       assert.fail("a contribution to a zero day fundraiser must be refused");
     } catch (err) {
-      assertErrorIs(err, "FundraiserEnded",
-        "the contribution should be refused because the window has closed");
+      assertErrorIs(
+        err,
+        "FundraiserEnded",
+        "the contribution should be refused because the window has closed"
+      );
     }
 
-    const vault = await provider.connection.getTokenAccountBalance(campaign.vault);
-    assert.strictEqual(vault.value.amount, "0", "nothing should have reached the vault");
+    const vault = await provider.connection.getTokenAccountBalance(
+      campaign.vault
+    );
+
+    assert.strictEqual(
+      vault.value.amount,
+      "0",
+      "nothing should have reached the vault"
+    );
   });
 });
