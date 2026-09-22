@@ -54,12 +54,18 @@ pub struct Refund<'info> {
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
 
-        // Check if the fundraising duration has been reached
+        // Check if the fundraising duration has been reached.
+        //
+        // A cancelled campaign counts as ended: that is the whole point of
+        // cancelling one, so the contributors do not have to wait out a
+        // deadline the maker has already given up on.
         let current_time = Clock::get()?.unix_timestamp;
- 
+
+        let ended = (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
+            >= self.fundraiser.duration as i64;
+
         require!(
-            (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
-                >= self.fundraiser.duration as i64,
+            ended || self.fundraiser.cancelled,
             crate::FundraiserError::FundraiserNotEnded
         );
 

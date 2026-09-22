@@ -17,5 +17,11 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("The fundraiser has been cancelled by its maker")]
+    FundraiserCancelled,
+    #[msg("The fundraiser has already been cancelled")]
+    AlreadyCancelled,
+    #[msg("Only the maker of this fundraiser can cancel it")]
+    UnauthorizedMaker
 }

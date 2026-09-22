@@ -72,6 +72,12 @@ impl<'info> Contribute<'info> {
             FundraiserError::ContributionTooBig
         );
 
+        // A cancelled campaign is closed for good, whatever the clock says.
+        require!(
+            !self.fundraiser.cancelled,
+            FundraiserError::FundraiserCancelled
+        );
+
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
         require!(
