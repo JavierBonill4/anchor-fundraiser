@@ -11,10 +11,13 @@ use crate::{
     state::{
         Contributor, 
         Fundraiser
-    }, FundraiserError, 
+    }, 
+    FundraiserError,
+    MilestoneReached,
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    PERCENTAGE_SCALER, 
+    SECONDS_TO_DAYS
 };
 
 #[derive(Accounts)]
@@ -66,9 +69,18 @@ impl<'info> Contribute<'info> {
 
         require!(amount >= one_token, FundraiserError::ContributionTooSmall);
 
+
+        let max_per_contributor = self
+            .fundraiser
+            .amount_to_raise
+            .checked_mul(MAX_CONTRIBUTION_PERCENTAGE)
+            .ok_or(FundraiserError::Overflow)?
+            .checked_div(PERCENTAGE_SCALER)
+            .ok_or(FundraiserError::Overflow)?;
+
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount <= max_per_contributor,
             FundraiserError::ContributionTooBig
         );
 
@@ -77,13 +89,24 @@ impl<'info> Contribute<'info> {
         require!(
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 < self.fundraiser.duration as i64,
-            crate::FundraiserError::FundraiserEnded
+            FundraiserError::FundraiserEnded
         );
 
         // Check if the maximum contributions per contributor have been reached
+
+  let contributor_new_total = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            // (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
+            //     && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+           self.contributor_account.amount <= max_per_contributor
+                && contributor_new_total <= max_per_contributor,
+           
+           
             FundraiserError::MaximumContributionsReached
         );
 
@@ -101,10 +124,51 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
 
-        self.contributor_account.amount += amount;
+         self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::Overflow)?;
+
+
+
+
+         // Milestones: which quarters are satisfied NOW (not what changed).
+        // A contribution can jump past a mark (e.g. 20% -> 30% crosses 25%),
+        // so compare the new total against every threshold and fire each one
+        // at most once via the `milestones_fired` bitmask. Bit 0 = 25%,
+        // bit 1 = 50%, bit 2 = 75%. Set before emitting; a failed CPI would
+        // unwind the whole instruction anyway.
+
+let quarters = self
+            .fundraiser
+            .current_amount
+            .checked_mul(4)
+            .ok_or(FundraiserError::Overflow)?
+            .checked_div(self.fundraiser.amount_to_raise)
+            .ok_or(FundraiserError::Overflow)?;
+
+
+
+             for i in 0..quarters.min(3) as u8 {
+            let flag: u8 = 1u8 << i;
+            if self.fundraiser.milestones_fired & flag == 0 {
+                self.fundraiser.milestones_fired |= flag;
+                emit!(MilestoneReached {
+                    fundraiser: self.fundraiser.key(),
+                    quarter: i + 1,
+                    amount: self.fundraiser.current_amount,
+                });
+            }
+        }
+
 
         Ok(())
     }

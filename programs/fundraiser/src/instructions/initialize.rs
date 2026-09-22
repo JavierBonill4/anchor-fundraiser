@@ -9,7 +9,10 @@ use anchor_spl::{
 };
 
 use crate::{
-    state::Fundraiser, FundraiserError, ANCHOR_DISCRIMINATOR, MIN_AMOUNT_TO_RAISE
+    state::Fundraiser,
+    FundraiserError,
+    ANCHOR_DISCRIMINATOR,
+    MIN_AMOUNT_TO_RAISE
 };
 
 #[derive(Accounts)]
@@ -55,14 +58,15 @@ impl<'info> Initialize<'info> {
         require!(amount > minimum, FundraiserError::InvalidAmount);
 
         // Initialize the fundraiser account
-        self.fundraiser.set_inner(Fundraiser {
+self.fundraiser.set_inner(Fundraiser {
             maker: self.maker.key(),
             mint_to_raise: self.mint_to_raise.key(),
             amount_to_raise: amount,
             current_amount: 0,
             time_started: Clock::get()?.unix_timestamp,
             duration,
-            bump: bumps.fundraiser
+            bump: bumps.fundraiser,
+            milestones_fired: 0,
         });
         
         Ok(())
