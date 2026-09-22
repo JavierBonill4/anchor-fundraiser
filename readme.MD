@@ -24,6 +24,24 @@ This example demonstrates how to create a fundraising for SPL Tokens.
 
 In this example, a user will be able to create a fundraiser account, where he will be specify the mint he wants to collect and the fundraising target.
 
+## Milestone events
+
+### What it does
+
+The fundraiser records when contributions reach 25%, 50%, and 75% of the target. Each milestone is permanent and fires once, even if a contribution crosses a boundary instead of landing exactly on it. The program also emits a `MilestoneReached` event that an indexer or front end can observe.
+
+### How it works
+
+`milestones_fired: u8` is appended to the `Fundraiser` account, with one bit for each milestone. At the end of `contribute`, after `current_amount` increases, the program calculates `current_amount * 4 / amount_to_raise` with checked arithmetic. It sets every newly satisfied bit before emitting its event. The feature uses the existing fundraiser, contributor, token, and vault accounts. It adds no instruction or account.
+
+### What it costs
+
+Each fundraiser stores one extra byte, so the maker pays the small additional rent once when creating the campaign. The feature creates no account and performs no extra CPI. Each contribution adds a checked multiplication, a division, and a loop capped at three iterations. A log is emitted only when a milestone is first reached. The exact compute-unit increase has not been benchmarked.
+
+### How I would attack it
+
+Milestones are one-way, but a refund can later reduce `current_amount`. A campaign can therefore retain a milestone flag after its live balance falls below that threshold. Someone could help a failing campaign cross a milestone, then reclaim their contribution after the deadline, leaving a misleading historical signal. Clients should use `current_amount` or the vault balance for the live percentage and treat milestone flags as history. An extreme target can also make the percentage calculation overflow; the program rejects that contribution with the `Overflow` error instead of corrupting state.
+
 ---
 
 ## Let's walk through the architecture:
