@@ -1,5 +1,7 @@
-pub mod fundraiser;
 pub mod contributor;
+pub mod fundraiser;
+pub mod success;
 
-pub use fundraiser::*;
 pub use contributor::*;
+pub use fundraiser::*;
+pub use success::*;
