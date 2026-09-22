@@ -1,3 +1,78 @@
+# Custom Feature — Milestones at 25%, 50%, 75% (Option A)
+
+## What it does
+
+A campaign should look different on-chain at 60% funded than at 10%, so the
+program now records quarter marks as the vault fills: bit 0 of a new
+`milestones_fired` bitmask means the total reached 25% of target, bit 1 means
+50%, bit 2 means 75%. Each mark fires at most once and emits a
+`MilestoneReached { fundraiser, quarter, amount }` event a front end can
+subscribe to instead of polling the vault. This paragraph was written before
+the code: the dishonest user here tries to re-fire a mark (or fire one without
+paying), so the design rule is that only `contribute`, after real tokens have
+moved, can set a bit — never TypeScript alone.
+
+## How it works
+
+- **State:** `milestones_fired: u8` appended (never inserted) at the end of
+  `Fundraiser`, so Borsh layout of existing fields is untouched. New error
+  `Overflow` added for all checked math on money paths.
+- **Timing:** end of `contribute`, after `current_amount` is updated. No other
+  instruction moves the total upward, so no crank or second instruction is
+  needed. `initialize` sets the bitmask to 0.
+- **Which instruction it hooks into:** `contribute` only. It computes where
+  the total *is*, not what changed: `quarters = current_amount * 4 / target`
+  (`checked_mul` then `checked_div`, multiply-before-divide for precision),
+  then loops `0..quarters.min(3)`, setting each missing bit and emitting the
+  event. The loop is the trap answer: a contribution that jumps from 20% to
+  30% still fires 25% even though the vault was never *at* 25% (today the 10%
+  per-contributor cap means one transaction can never skip a whole quarter,
+  but the loop stays correct if the cap ever changes).
+- **Refunds:** one-way on purpose — `refund` reduces `current_amount` but
+  never clears bits. A mark that flickers on and off is worse than one that
+  is generous, and re-arming would let someone fire the same milestone twice.
+
+## What it costs
+
+- **Rent:** 1 extra byte on each `Fundraiser` account, paid once by the maker
+  at `initialize` (picked up automatically via `InitSpace`). No new accounts,
+  no new signatures.
+- **Compute:** a handful of checked integer ops plus at most three
+  flag-check-and-emit steps per `contribute`; contributions below the next
+  mark pay only the arithmetic. Events are transaction logs, not state — cheap,
+  and recorded *in addition to* the bitmask, never instead of it.
+- **Compatibility:** accounts created before this change have one byte less
+  and will not deserialize; this is a fresh-test/devnet caveat of appending
+  state, documented here rather than hidden.
+
+## How you would attack it
+
+- **Refund below a fired mark:** after a refund `milestones_fired` can claim
+  25% while the vault holds 10%. Accepted deliberately (see above) — a front
+  end must read `vault.amount`/`current_amount` for a live percentage and
+  treat the bits as history ("reached", not "holding").
+- **Grinding dust contributions:** each `contribute` still costs a transaction
+  plus at least one whole token and moves real money into the vault, and
+  firing a mark pays no reward, so spamming contributions gains nothing.
+- **Absurd targets:** `amount_to_raise` near `u64::MAX` makes
+  `target * 10 / 100` unrepresentable. The cap check runs *before* the token
+  transfer and fails with `Overflow`, so no funds move. The post-transfer
+  `current * 4 / target` check is equally guarded, and a failure there unwinds
+  the whole instruction (transfer included) atomically.
+- **Skipped-mark assumption:** if the 10% cap were ever raised, a single
+  contribution could cross two marks; the loop already fires both, each once.
+
+## Testing
+
+`anchor test` — the original suite still passes, plus `tests/milestones.ts`
+(five tests): exact 25% boundary fires, just below 25% stays silent,
+climbing to 60% shows bits 0+1, a later contribution never re-fires, and an
+overflowing cap fails with `Overflow`. Delete the milestone logic and the
+first four go red (`milestonesFired` no longer exists); restore bare `*` math
+and the fifth goes red with a panic instead of the named error.
+
+---
+
 # Token Fundraiser
 
 ## Prerequisites

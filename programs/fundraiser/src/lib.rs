@@ -11,6 +11,13 @@ use instructions::*;
 use error::*;
 pub use constants::*;
 
+#[event]
+pub struct MilestoneReached {
+    pub fundraiser: Pubkey,
+    pub quarter: u8,
+    pub amount: u64,
+}
+
 #[program]
 pub mod fundraiser {
     use super::*;
