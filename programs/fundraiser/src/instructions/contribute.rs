@@ -1,20 +1,10 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    state::{Contributor, Fundraiser},
+    FundraiserError, ANCHOR_DISCRIMINATOR, MAX_CONTRIBUTION_PERCENTAGE, PERCENTAGE_SCALER,
+    SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -55,7 +45,6 @@ pub struct Contribute<'info> {
 
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
-
         // Check that the contribution is at least one whole token.
         //
         // The previous form was `1_u8.pow(decimals)`, and 1 raised to any power is 1
@@ -68,7 +57,9 @@ impl<'info> Contribute<'info> {
 
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount
+                <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                    / PERCENTAGE_SCALER,
             FundraiserError::ContributionTooBig
         );
 
@@ -82,9 +73,24 @@ impl<'info> Contribute<'info> {
 
         // Check if the maximum contributions per contributor have been reached
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            (self.contributor_account.amount
+                <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                    / PERCENTAGE_SCALER)
+                && (self.contributor_account.amount + amount
+                    <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                        / PERCENTAGE_SCALER),
             FundraiserError::MaximumContributionsReached
+        );
+
+        let new_total = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ContributionTooBig)?;
+
+        require!(
+            new_total <= self.fundraiser.amount_to_raise,
+            FundraiserError::ContributionTooBig
         );
 
         // Transfer the funds from the contributor to the vault.
@@ -102,9 +108,13 @@ impl<'info> Contribute<'info> {
         transfer(cpi_ctx, amount)?;
 
         // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        self.fundraiser.current_amount = new_total;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ContributionTooBig)?;
 
         Ok(())
     }

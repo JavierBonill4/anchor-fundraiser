@@ -1,18 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, 
-    SECONDS_TO_DAYS
+    state::{Contributor, Fundraiser},
+    SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -53,10 +44,9 @@ pub struct Refund<'info> {
 
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
-
         // Check if the fundraising duration has been reached
         let current_time = Clock::get()?.unix_timestamp;
- 
+
         require!(
             (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
                 >= self.fundraiser.duration as i64,
