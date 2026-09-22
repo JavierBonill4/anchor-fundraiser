@@ -93,9 +93,24 @@ impl<'info> Refund<'info> {
         // Transfer the funds from the vault to the contributor
         transfer(cpi_ctx, self.contributor_account.amount)?;
 
-        // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
 
+
+
+        // Update the fundraiser state by reducing the amount contributed
+         // Checked math only; a refund larger than the tracked total must fail
+        // with a named error instead of panicking.
+        self.fundraiser.current_amount = self.
+        fundraiser
+        .current_amount
+       .checked_sub(self.contributor_account.amount)
+            .ok_or(crate::FundraiserError::Overflow)?;
+
+
+
+             // Milestones are one-way on purpose: a refund does NOT clear
+        // `milestones_fired`. A mark that flickers on and off is worse than
+        // one that is generous, and re-arming would let a contributor fire the
+        // same milestone twice. See the README for the full rationale.
         Ok(())
     }
 }
