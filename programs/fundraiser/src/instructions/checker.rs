@@ -1,18 +1,13 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
-    associated_token::AssociatedToken, 
-    token::{
-        transfer, 
-        Mint, 
-        Token, 
-        TokenAccount, 
-        Transfer
-    }
+    associated_token::AssociatedToken,
+    token::{transfer, Mint, Token, TokenAccount, Transfer},
 };
 
 use crate::{
-    state::Fundraiser, 
-    FundraiserError
+    error::FundraiserError,
+    state::{Fundraiser, Success},
+    ANCHOR_DISCRIMINATOR,
 };
 
 #[derive(Accounts)]
@@ -40,19 +35,35 @@ pub struct CheckContributions<'info> {
         associated_token::authority = maker,
     )]
     pub maker_ata: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = maker,
+        space = ANCHOR_DISCRIMINATOR + Success::INIT_SPACE,
+        seeds = [b"success", fundraiser.key().as_ref()],
+        bump,
+    )]
+    pub success: Account<'info, Success>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
 impl<'info> CheckContributions<'info> {
-    pub fn check_contributions(&self) -> Result<()> {
-        
+    pub fn check_contributions(&mut self, bumps: &CheckContributionsBumps) -> Result<()> {
         // Check if the target amount has been met
         require!(
             self.vault.amount >= self.fundraiser.amount_to_raise,
             FundraiserError::TargetNotMet
         );
+
+        // Record successful campaign
+        self.success.set_inner(Success {
+            fundraiser: self.fundraiser.key(),
+            maker: self.maker.key(),
+            reward_mint: self.fundraiser.reward_mint,
+            fundraiser_bump: self.fundraiser.bump,
+            bump: bumps.success,
+        });
 
         // Transfer the funds to the maker
         // CPI to the token program to transfer the funds
