@@ -11,10 +11,12 @@ use crate::{
     state::{
         Contributor, 
         Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    }, FundraiserError,
+    MilestoneReached,
+    ANCHOR_DISCRIMINATOR,
+    MAX_CONTRIBUTION_PERCENTAGE,
+    MILESTONE_QUARTERS,
+    PERCENTAGE_SCALER, QUARTERS_PER_TARGET, SECONDS_TO_DAYS
 };
 
 #[derive(Accounts)]
@@ -105,6 +107,47 @@ impl<'info> Contribute<'info> {
         self.fundraiser.current_amount += amount;
 
         self.contributor_account.amount += amount;
+
+        // Runs after the total has moved, so no contribution can cross a
+        // milestone without firing it.
+        self.fire_milestones()?;
+
+        Ok(())
+    }
+
+    fn fire_milestones(&mut self) -> Result<()> {
+        // Cross-multiply instead of dividing, so rounding can never fire a
+        // milestone early. u128 so a u64 times 4 cannot overflow.
+        let raised = (self.fundraiser.current_amount as u128)
+            .checked_mul(QUARTERS_PER_TARGET)
+            .ok_or(FundraiserError::MathOverflow)?;
+
+        // A loop rather than one `if` per quarter: the 10% cap means one
+        // contribution cannot cross two quarters today, but this stays
+        // correct if the cap changes.
+        for (i, quarter) in MILESTONE_QUARTERS.iter().enumerate() {
+            let bit = 1u8 << i;
+            if self.fundraiser.milestones_fired & bit != 0 {
+                continue;
+            }
+
+            let threshold = (self.fundraiser.amount_to_raise as u128)
+                .checked_mul(*quarter as u128)
+                .ok_or(FundraiserError::MathOverflow)?;
+            if raised < threshold {
+                // Quarters are ascending, so none after this one is reached.
+                break;
+            }
+
+            // Set the flag before doing the work.
+            self.fundraiser.milestones_fired |= bit;
+
+            emit!(MilestoneReached {
+                fundraiser: self.fundraiser.key(),
+                quarter: *quarter,
+                amount: self.fundraiser.current_amount,
+            });
+        }
 
         Ok(())
     }

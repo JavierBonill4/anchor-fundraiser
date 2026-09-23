@@ -20,6 +20,182 @@ The repo declares a program id it does not ship the keypair for, so your first
 `DeclaredProgramIdMismatch`. `anchor keys sync` rewrites `declare_id!` and
 `Anchor.toml` to match the keypair you just generated. Run it once, then rebuild.
 
+---
+
+## Custom feature: Milestones
+
+> A rule that only your TypeScript obeys is not a rule. If the program does not
+> enforce it, it does not exist.
+
+### What it does
+
+*Written before any code, and unchanged since.*
+
+**Milestones** records, on-chain and exactly once, the first time a campaign's
+contributed total reaches 25%, 50% and 75% of its target. The check runs inside
+`contribute`, after the transfer and the total update, so no contribution can
+push the total past a mark without the program recording it. Each mark is one
+bit in a new `milestones_fired: u8` on `Fundraiser`. The contribution that
+crosses a mark sets its bit and emits a `MilestoneReached` event, and a bit is
+never cleared. Milestones are history, not a live gauge: refunds lower the total
+but don't clear a mark. They also can't make a mark fire again, because refunds
+only open after contributions have closed. A new `assert_milestone` instruction
+fails with `MilestoneNotReached` unless a given mark has fired. Any transaction
+can include it, so other apps can require a milestone and have the chain enforce
+it rather than a frontend.
+
+### How it works
+
+**State.** One field, appended after `bump` so no existing offset moves:
+
+```rust
+pub milestones_fired: u8, // bit i set once MILESTONE_QUARTERS[i] is reached
+```
+
+| Bit | Quarter | Reached when |
+| --- | --- | --- |
+| `0b001` | 1 | `current_amount * 4 >= amount_to_raise * 1` |
+| `0b010` | 2 | `current_amount * 4 >= amount_to_raise * 2` |
+| `0b100` | 3 | `current_amount * 4 >= amount_to_raise * 3` |
+
+`initialize` sets it to `0` explicitly, so a campaign always starts with no
+milestones.
+
+**Timing: inline, at the end of `contribute`.** The trigger is a number that
+only `contribute` raises, so the check runs right after `current_amount` moves.
+It runs on every successful contribution, and no client can leave it out. A
+separate crank would only fire if somebody remembered to call it.
+
+`fire_milestones` loops over the quarters. For each one whose bit is clear and
+whose threshold is reached, it **sets the bit first**, then emits
+`MilestoneReached { fundraiser, quarter, amount }`. Two details matter:
+
+- **Cross-multiplied, in `u128`.** `target * 25 / 100` rounds down and would
+  fire a quarter a fraction of a unit early (for a 30,000,001 target, at
+  7,500,000 instead of 7,500,000.25). Comparing `current * 4` with `target * q`
+  never divides. Widening to `u128` means the multiply cannot overflow.
+- **A loop, not three `if`s.** The 10% cap means one contribution moves the
+  total at most 10 points, so it can never cross two quarters. The loop stays
+  correct if the cap changes.
+
+**Why a fired bit is never cleared.** `contribute` requires the window to be
+open, and `refund` requires it to be closed. So once the first refund lowers
+the total, no contribution can ever raise it again. Clearing bits on refund
+would only ever turn bits off; it could never let a quarter fire twice.
+Keeping them makes the bitmask an honest record of what happened.
+
+**Which total it watches.** `current_amount`, which only `contribute` and
+`refund` change, not `vault.amount`, which anyone can raise with a plain token
+transfer. See attack 4.
+
+**New instruction: `assert_milestone(quarter: u8)`.** One read-only account,
+`fundraiser`, checked by owner, discriminator and seeds
+`[b"fundraiser", fundraiser.maker]`. There is no signer, so anyone may call it.
+It reads the **bit**, not `current_amount`, so it agrees with the history
+above.
+
+| Error | When |
+| --- | --- |
+| `InvalidMilestone` | `quarter` is not 1, 2 or 3 |
+| `MilestoneNotReached` | the quarter's bit is not set |
+| `MathOverflow` | a threshold multiply overflows; unreachable in `u128`, kept because the rule is "no bare math" |
+
+New errors are appended, so the original codes 6000–6007 keep their numbers.
+
+**Tests.** `tests/milestones.ts` runs on bankrun, so it can move the clock
+for the refund case and decode events from each transaction's logs:
+
+- **happy path:** each quarter fires once, with its event;
+- **boundary:** one raw unit below a quarter does not fire, exactly on it does,
+  and a target not divisible by four is not rounded down;
+- **abuse:** a quarter never fires twice; quarters 0, 4 and 255 are refused
+  with `InvalidMilestone`; a quarter stays fired after refunds empty the vault.
+
+Commenting out the `fire_milestones()` call turns 5 of the 7 red. Replacing the
+cross-multiply with division, or removing the "already fired" check, each turn
+the test written for them red.
+
+### What it costs
+
+Measured on bankrun with fixed keypairs, so each build sees identical addresses
+and PDA bumps, comparing builds with and without the `fire_milestones()` call:
+
+| | Without | With | Added |
+| --- | --- | --- | --- |
+| `contribute`, no quarter crossed | 39,137 CU | 39,158 CU | **+21 CU** |
+| `contribute`, crossing a quarter | 31,637 CU | 31,978 CU | **+341 CU** (bit + event) |
+| `initialize` | 45,150 CU | 45,150 CU | 0 |
+| `assert_milestone`: pass, not reached, invalid | n/a | 2,548, 4,150, 3,665 CU | new |
+| `Fundraiser` account | 98 bytes | 99 bytes | +1 byte |
+| `Fundraiser` rent | 1,572,960 lamports | 1,579,920 lamports | **+6,960 lamports**, returned to the maker when `check_contributions` closes the account |
+
+- **Extra accounts:** none on any original instruction. `assert_milestone`
+  takes one read-only account and 1 byte of arguments.
+- **Log space:** each fired quarter writes one `Program data:` line
+  (49 bytes of event, about 68 characters of base64). That counts towards the
+  transaction's log limit; see attack 5.
+- **Absolute CU varies** by roughly 1,500 CU per extra attempt that
+  `contribute`'s `find_program_address` needs for the Contributor bump, which
+  depends on the wallet. The deltas above don't.
+
+### How you would attack it
+
+1. **Buy the milestones with your own money, and get it back.** The 10% cap
+   is per wallet, not per person, and wallets are free. A maker can push their
+   own campaign to 75% through fresh wallets. If the campaign fails, every
+   wallet refunds. If it succeeds, `check_contributions` pays the maker their
+   own money back. The cost is fees, rent and tying up the capital until the
+   deadline. **A milestone proves that money moved through `contribute`, not
+   that independent people back the campaign.** Nothing on-chain can tell the
+   two apart without identity, which is why no reward is attached to a
+   milestone.
+2. **Hand `assert_milestone` a different fundraiser.** It proves that *the
+   account you passed* is a genuine `Fundraiser` with that bit set. It cannot
+   know which campaign you meant. A perk that gates on "quarter 3 reached" but
+   doesn't pin the fundraiser's address (or its `maker`) can be satisfied by
+   an attacker's own self-funded campaign (attack 1). Pinning the address is
+   the consumer's job.
+3. **Same address, different campaign.** The Fundraiser PDA is
+   `[b"fundraiser", maker]`. After `check_contributions` closes it, the same
+   maker can `initialize` again at the same address with a different mint (the
+   old vault ATA is never closed, so the same mint's vault `init` fails), and
+   the bits reset to `0`. A consumer that remembered "this address reached 75%" is now looking at
+   a different campaign. Key on `(address, time_started)`, not the address
+   alone. (The original program has a worse version of this problem: it leaves
+   every `Contributor` PDA open. That is out of scope here, but that's the next
+   feature.)
+4. **Move the vault without moving the total.** Anyone can transfer tokens
+   straight into the vault ATA. `check_contributions` and `refund` read
+   `vault.amount`; milestones read `current_amount`. So a campaign can reach
+   its target with no milestone fired, and a direct transfer both dodges the
+   10% cap and never shows up in the milestones. Watching `current_amount` is
+   deliberate: it's the only total the program controls, and it matches the
+   per-contributor records that refunds pay out. The cost is that the two
+   totals can disagree, and this README says so rather than hiding it.
+5. **Blind the indexers.** Events are log lines, and the runtime truncates a
+   transaction's logs past its byte limit. If an attacker crosses a quarter in
+   a transaction that logs heavily *before* `contribute`, `MilestoneReached`
+   can be cut off, and an indexer reading only logs never sees it. The bit is
+   still set, because state can't be truncated. **The bitmask is the source of
+   truth, and the event is a notification.** `emit_cpi!` would avoid this, at
+   the cost of two more accounts and a self-CPI on every contribution.
+6. **Race for the crossing.** The contributor whose transaction crosses a mark
+   is visible only as that transaction's signer; the event doesn't name them. No reward is attached, so there's nothing to
+   front-run. If a later feature pays "the contributor who crossed 50%", the
+   crossing becomes a race that validators and bots win. Pay the crossing
+   contributor nothing.
+7. **Read "reached" as "currently at".** A campaign can fire quarter 3 and then
+   refund down to zero, and the bit still says reached. That's the design, but
+   a consumer that wants the *current* level must read `current_amount`
+   instead.
+8. **Out-of-range arithmetic, and what we didn't touch.** `MathOverflow` is
+   unreachable because the math is `u128`. If someone narrowed it back to
+   `u64`, large targets would make every crossing contribution fail. The
+   original `contribute` already does bare `amount_to_raise * 10`, which panics
+   for targets above `u64::MAX / 10` before our code runs. We left the four
+   original instructions as they were, so that stays a known issue in the base
+   program, not something this feature introduces.
+
 This example demonstrates how to create a fundraising for SPL Tokens.
 
 In this example, a user will be able to create a fundraiser account, where he will be specify the mint he wants to collect and the fundraising target.

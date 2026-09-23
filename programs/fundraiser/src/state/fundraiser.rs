@@ -10,4 +10,7 @@ pub struct Fundraiser {
     pub time_started: i64,
     pub duration: u8,
     pub bump: u8,
+    // Bit i is set once current_amount has reached MILESTONES[i] percent of
+    // amount_to_raise. Bits are only ever set, never cleared.
+    pub milestones_fired: u8,
 }

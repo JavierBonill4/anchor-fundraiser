@@ -17,5 +17,11 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("A milestone calculation overflowed")]
+    MathOverflow,
+    #[msg("Milestones are quarters 1, 2 or 3 of the target")]
+    InvalidMilestone,
+    #[msg("This milestone has not been reached")]
+    MilestoneNotReached,
 }

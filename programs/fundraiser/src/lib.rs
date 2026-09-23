@@ -6,10 +6,12 @@ mod state;
 mod instructions;
 mod error;
 mod constants;
+mod events;
 
 use instructions::*;
 use error::*;
 pub use constants::*;
+pub use events::*;
 
 #[program]
 pub mod fundraiser {
@@ -39,6 +41,13 @@ pub mod fundraiser {
     pub fn refund(ctx: Context<Refund>) -> Result<()> {
 
         ctx.accounts.refund()?;
+
+        Ok(())
+    }
+
+    pub fn assert_milestone(ctx: Context<AssertMilestone>, quarter: u8) -> Result<()> {
+
+        ctx.accounts.assert_milestone(quarter)?;
 
         Ok(())
     }
