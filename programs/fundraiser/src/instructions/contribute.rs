@@ -11,7 +11,9 @@ use crate::{
     state::{
         Contributor, 
         Fundraiser
-    }, FundraiserError, 
+    },
+    MilestoneReached,
+    FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
     PERCENTAGE_SCALER, SECONDS_TO_DAYS
@@ -101,10 +103,41 @@ impl<'info> Contribute<'info> {
         // Transfer the funds from the contributor to the vault
         transfer(cpi_ctx, amount)?;
 
-        // Update the fundraiser and contributor accounts with the new amounts
-        self.fundraiser.current_amount += amount;
+        // Update the fundraiser and contributor accounts with the new amounts using checked_add
+        self.fundraiser.current_amount = self
+            .fundraiser
+            .current_amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
 
-        self.contributor_account.amount += amount;
+        self.contributor_account.amount = self
+            .contributor_account
+            .amount
+            .checked_add(amount)
+            .ok_or(FundraiserError::ArithmeticOverflow)?;
+
+        // Milestones at 25%, 50% and 75% of the target
+        // computed as current * 4 / target, looped over 0..quarters.min(3),
+        // guarded by the bit so it is idempotent
+        let current = self.fundraiser.current_amount as u128;
+        let target = self.fundraiser.amount_to_raise as u128;
+        if target > 0 {
+            let quarters = (current
+                .checked_mul(4)
+                .ok_or(FundraiserError::ArithmeticOverflow)?
+                / target) as u8;
+
+            for i in 0..quarters.min(3) {
+                let mask = 1u8 << i;
+                if (self.fundraiser.milestones_fired & mask) == 0 {
+                    self.fundraiser.milestones_fired |= mask;
+                    emit!(MilestoneReached {
+                        fundraiser: self.fundraiser.key(),
+                        milestone: (i + 1) * 25,
+                    });
+                }
+            }
+        }
 
         Ok(())
     }

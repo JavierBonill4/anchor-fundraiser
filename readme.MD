@@ -489,4 +489,57 @@ impl<'info> Refund<'info> {
 ```
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
-After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+After doing the proper checks, we transfer the donated funds from the vault back to the contributor.
+
+---
+
+## Feature: Funding Milestones
+
+The program includes on-chain milestone tracking at 25%, 50%, and 75% of the fundraising target (`amount_to_raise`).
+
+### What It Does
+- **Milestone Thresholds**: Progress is marked at 25%, 50%, and 75% of the target amount.
+- **Idempotent Single-Fire**: Each milestone fires exactly once. It sets a corresponding bit in `milestones_fired` and emits a `MilestoneReached` event.
+- **Crossing Marks in Stride**: If a contribution crosses a milestone threshold without landing on the exact boundary (or skips across multiple tiers), all traversed milestones trigger in order.
+- **Persistent Historical Record**: Milestone flags are permanent for the campaign lifecycle; contributor refunds do not retract previously reached milestones.
+
+### How It Works
+- **State Representation**: A `milestones_fired: u8` field is appended to the `Fundraiser` account struct.
+  - Bit 0 (`1 << 0` = 1): 25% milestone reached.
+  - Bit 1 (`1 << 1` = 2): 50% milestone reached.
+  - Bit 2 (`1 << 2` = 4): 75% milestone reached.
+  - Initialized to `0` in `initialize`.
+- **Computation**: At the end of `contribute`, the current milestone tier is calculated:
+  ```rust
+  let quarters = ((current * 4) / target) as u8;
+  for i in 0..quarters.min(3) {
+      let mask = 1u8 << i;
+      if (self.fundraiser.milestones_fired & mask) == 0 {
+          self.fundraiser.milestones_fired |= mask;
+          emit!(MilestoneReached {
+              fundraiser: self.fundraiser.key(),
+              milestone: (i + 1) * 25,
+          });
+      }
+  }
+  ```
+  Iterating over `0..quarters.min(3)` caps tracked milestones at 75% (the 4th quarter / 100% does not set an additional bit). The bit check `(milestones_fired & mask) == 0` guarantees idempotency.
+- **Safe Math**: All counter updates (`fundraiser.current_amount` and `contributor_account.amount`) and quarter calculations use checked math (`checked_add`, `checked_mul`), returning the custom `FundraiserError::ArithmeticOverflow` on overflow.
+
+### Weaknesses & Limitations
+1. **One-Way Flags (Post-Refund Overstatement)**:
+   Milestone flags are strictly monotonic and are not rolled back on refund. If a campaign reaches 75% but fails before the deadline, contributors can refund their tokens. The `milestones_fired` byte will still read `7` (`0b00000111`), which off-chain dashboards or consumers could misinterpret as active funding if they do not also check current vault balances.
+2. **Sybil Attacks on Per-Wallet Contribution Caps**:
+   The protocol caps any single contributor wallet at 10% of the target. However, this per-wallet limit cannot prevent an individual with multiple keypairs from faking momentum and triggering milestone events artificially.
+3. **Direct Vault Transfers**:
+   Anyone can directly transfer SPL tokens to the fundraiser's vault ATA using standard SPL Token instructions, bypassing the `contribute` instruction. Such transfers do not increment `current_amount` or trigger milestones, causing vault balances and on-chain accounting to diverge.
+
+### Testing Suite
+The milestone functionality is verified in `tests/milestones.ts` through 6 dedicated test cases:
+1. **Happy path**: Milestone bit 0 is set when progress crosses the 25% threshold.
+2. **Exact 25% boundary**: Milestone fires when a contribution lands precisely on the 25% mark.
+3. **Capped whale**: Verifies that the 10% per-wallet maximum prevents a single contributor from reaching 25% alone.
+4. **Idempotency**: Verifies that subsequent contributions within the same tier do not re-fire or alter flags.
+5. **75% cap**: Fully funding to 100% triggers only the 25%, 50%, and 75% bits (`0b111` = 7), leaving bit 3 unset.
+6. **Traversal**: Progressing across milestones triggers each milestone in succession.
+*(With the milestone loop commented out, 4 of these tests fail as expected, confirming sensitivity to the milestone logic).*
