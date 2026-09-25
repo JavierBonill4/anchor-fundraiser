@@ -1,19 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
-    associated_token::AssociatedToken, 
-    token::{
-        transfer, 
-        Mint, 
-        Token, 
-        TokenAccount, 
-        Transfer
-    }
+    associated_token::AssociatedToken,
+    token::{transfer, Mint, Token, TokenAccount, Transfer},
 };
 
-use crate::{
-    state::Fundraiser, 
-    FundraiserError
-};
+use crate::{state::Fundraiser, FundraiserError};
 
 #[derive(Accounts)]
 pub struct CheckContributions<'info> {
@@ -47,7 +38,6 @@ pub struct CheckContributions<'info> {
 
 impl<'info> CheckContributions<'info> {
     pub fn check_contributions(&self) -> Result<()> {
-        
         // Check if the target amount has been met
         require!(
             self.vault.amount >= self.fundraiser.amount_to_raise,
