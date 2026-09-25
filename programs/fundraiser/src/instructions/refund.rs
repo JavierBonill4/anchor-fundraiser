@@ -1,18 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    transfer, 
-    Mint, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, 
-    SECONDS_TO_DAYS
+    state::{Contributor, Fundraiser},
+    SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -53,13 +44,16 @@ pub struct Refund<'info> {
 
 impl<'info> Refund<'info> {
     pub fn refund(&mut self) -> Result<()> {
-
-        // Check if the fundraising duration has been reached
+        // Refunds open either when the campaign is cancelled or when it runs
+        // out of time. Cancelling is the whole point of the feature: it lets a
+        // maker release everyone's funds on day one instead of making them sit
+        // out the full duration.
         let current_time = Clock::get()?.unix_timestamp;
- 
+        let deadline_passed = (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
+            >= self.fundraiser.duration as i64;
+
         require!(
-            (current_time - self.fundraiser.time_started) / SECONDS_TO_DAYS
-                >= self.fundraiser.duration as i64,
+            self.fundraiser.cancelled || deadline_passed,
             crate::FundraiserError::FundraiserNotEnded
         );
 
