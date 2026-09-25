@@ -24,6 +24,16 @@ This example demonstrates how to create a fundraising for SPL Tokens.
 
 In this example, a user will be able to create a fundraiser account, where he will be specify the mint he wants to collect and the fundraising target.
 
+## Custom feature: failed campaign lifecycle cleanup
+
+What it does: a failed fundraiser can now be cleaned up after every contributor has taken their refund. The maker calls `close_failed_fundraiser` once the campaign window has ended, the vault is still below the target, and the vault token balance is zero. The instruction closes the vault token account and the fundraiser PDA, returning rent instead of leaving dead accounts open forever.
+
+How it works: the feature does not add new state. It reuses the existing `Fundraiser` fields: `maker`, `mint_to_raise`, `amount_to_raise`, `time_started`, `duration`, and `bump`. The cleanup instruction derives the fundraiser PDA from `["fundraiser", maker]`, checks the original mint through `has_one = mint_to_raise`, checks that the deadline has passed, checks that the target was missed, and requires `vault.amount == 0`. The vault is an ATA owned by the SPL Token program with the fundraiser PDA as token authority, so the program signs a Token Program `close_account` CPI with the fundraiser seeds before Anchor closes the fundraiser PDA.
+
+What it costs: cleanup adds one instruction and one new named error, `VaultNotEmpty`. It costs one extra transaction from the maker after refunds have completed, plus a Token Program CPI to close the vault. There is no extra rent during the fundraiser and no extra account is required.
+
+How to attack it: the dangerous path is closing too early. If cleanup were allowed before refunds, contributors would lose the vault authority needed to recover their tokens. The program prevents this with three on-chain checks: the fundraiser must be ended, the vault must still be below target, and the vault must be empty. A malicious maker also cannot clean up someone else's fundraiser because the fundraiser account has `has_one = maker` and PDA seeds tied to the signing maker. A successful fundraiser cannot be cleaned up with this path because it fails with `TargetMet`.
+
 ---
 
 ## Let's walk through the architecture:
