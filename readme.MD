@@ -1,5 +1,38 @@
 # Token Fundraiser
 
+## Chosen Feature: Option C — NFT receipt for contributing
+
+Every contribution receives a one-of-one NFT receipt that works as a **bearer claim** on their contribution. The receipt is transferable and has no freeze authority. Whoever holds it can redeem it for a refund after the fundraise ends without reaching its target: the `refund` instruction burns the receipt and pays out the contribution recorded against it.
+
+Because a receipt equals a refund claim, receipts can be traded, and a secondary market for positions in the fundraise could form. Contributors who transfer their receipt give up their refund; there is no clawback, and the program never burns a token it doesn't hold the signature for.
+
+### What it does
+
+Contributing to a fundraiser now gives you a token, one per contribution, that proves you paid in. If the campaign misses its target, that token is your ticket to a refund: whoever holds it can hand it back to the program and get the contribution it records. You can keep it, give it away or sell it. The refund follows the token, not the wallet that originally paid.
+
+### How it works
+
+- **State.** `Fundraiser` gains `issue_count: u64` (appended at the end), which numbers the receipts 0, 1, 2… A new `Receipt` PDA at `[b"receipt", fundraiser, issue_number]` stores each receipt's `amount` and `bump`. `Contributor` is unchanged and still enforces the 10% per-wallet cap.
+- **When `contribute` runs.** After the existing transfer, it creates the `Receipt`, a receipt mint PDA at `[b"receipt_mint", fundraiser, issue_number]` (0 decimals, mint authority = the fundraiser PDA) and the contributor's token account for it. It mints exactly 1, removes the mint authority so no second copy can exist, and increments `issue_count`.
+- **When `refund(issue_number)` runs.** Only after the deadline, and only if the target was missed. The receipt and its mint are both derived from `issue_number`, and the signer must present a token account for that mint holding exactly 1 (`NoReceipt` otherwise). The program burns the NFT, pays `receipt.amount` from the vault, and closes the `Receipt`.
+- **Accounts added.** `contribute`: `receipt`, `receipt_mint`, `contributor_receipt_ata`, `associated_token_program`. `refund`: `receipt`, `receipt_mint`, `holder_receipt_ata` replace `contributor_account`.
+
+### What it costs
+
+- **Rent, per contribution, paid by the contributor:** `Receipt` (17 B) ~0.00101 SOL, receipt mint (82 B) ~0.00146 SOL, receipt token account (165 B) ~0.00204 SOL. That's ~0.0045 SOL in total. Only the `Receipt` rent comes back on refund.
+- **Compute (measured in the bankrun tests):** `contribute` ~73k–105k CU, `refund` ~32k–37k CU. Both are well under the 200k default.
+- **Accounts:** three new accounts per contribution, and four more account inputs on `contribute`.
+
+### How you would attack it
+
+- **Pair a small NFT with someone else's large claim.** Blocked: the claim and the mint derive from the same `issue_number`, so the NFT presented has to be that receipt's NFT.
+- **Redeem twice.** Blocked: the NFT is burned and the `Receipt` closed on the first redemption.
+- **Redeem after selling the receipt.** Blocked: the seller's token account now holds 0.
+- **Contention.** Every contribution to a campaign goes through one shared `issue_count`. Two contributions built against the same count race, and the loser fails and must be resent. That's fine at this scale, but it's a throughput limit.
+- **Stranded rent.** SPL Token (legacy) mints can't be closed, and the program doesn't close the emptied token account or the `Contributor` account, so most of the rent stays locked.
+- **Lookalike tokens.** There's no metadata, so a fake "receipt" is easy to mint. The program can't be fooled by one, because it checks the derived mint address, but someone buying a receipt has to verify the mint address themselves.
+- **A receipt is only worth something if the campaign fails.** Once the target is met, receipts can never be redeemed. Anyone trading them should know that.
+
 ## Prerequisites
 
 | Tool | Version |
