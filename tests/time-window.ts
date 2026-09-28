@@ -75,6 +75,7 @@ describe("fundraiser — contribution window", () => {
     vault: anchor.web3.PublicKey;
     contributorAccount: anchor.web3.PublicKey;
     contributorAta: anchor.web3.PublicKey;
+    whitelistEntry: anchor.web3.PublicKey;
   };
 
   /**
@@ -122,6 +123,10 @@ describe("fundraiser — contribution window", () => {
       [Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
       program.programId
     );
+    const [whitelistEntry] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("whitelist"), fundraiser.toBuffer(), provider.publicKey.toBuffer()],
+      program.programId
+    );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await program.methods
@@ -139,7 +144,20 @@ describe("fundraiser — contribution window", () => {
       .rpc()
       .then(confirm);
 
-    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta };
+    await program.methods
+      .whitelistContributor(true)
+      .accountsPartial({
+        maker: maker.publicKey,
+        contributor: provider.publicKey,
+        fundraiser,
+        whitelistEntry,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([maker])
+      .rpc()
+      .then(confirm);
+
+    return { maker, mint, fundraiser, vault, contributorAccount, contributorAta, whitelistEntry };
   };
 
   const contribute = (c: Campaign, amount: number) =>
@@ -149,6 +167,7 @@ describe("fundraiser — contribution window", () => {
         contributor: provider.publicKey,
         mintToRaise: c.mint,
         fundraiser: c.fundraiser,
+        whitelistEntry: c.whitelistEntry,
         contributorAccount: c.contributorAccount,
         contributorAta: c.contributorAta,
         vault: c.vault,

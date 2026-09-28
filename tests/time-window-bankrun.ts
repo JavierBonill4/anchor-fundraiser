@@ -179,6 +179,10 @@ describe("fundraiser — the window closes (bankrun)", () => {
       [Buffer.from("contributor"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
       program.programId
     );
+    const [whitelistEntry] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("whitelist"), fundraiser.toBuffer(), payer.publicKey.toBuffer()],
+      program.programId
+    );
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
     await send(
@@ -195,6 +199,16 @@ describe("fundraiser — the window closes (bankrun)", () => {
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           })
           .instruction(),
+        await program.methods
+          .whitelistContributor(true)
+          .accountsPartial({
+            maker: maker.publicKey,
+            contributor: payer.publicKey,
+            fundraiser,
+            whitelistEntry,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .instruction(),
       ],
       [maker]
     );
@@ -206,6 +220,7 @@ describe("fundraiser — the window closes (bankrun)", () => {
           contributor: payer.publicKey,
           mintToRaise: mint,
           fundraiser,
+          whitelistEntry,
           contributorAccount,
           contributorAta,
           vault,

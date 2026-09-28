@@ -17,5 +17,10 @@ pub enum FundraiserError {
     #[msg("The fundraiser has ended")]
     FundraiserEnded,
     #[msg("Invalid total amount. i should be bigger than 3")]
-    InvalidAmount
+    InvalidAmount,
+    #[msg("Wallet is not whitelisted to contribute")]
+    NotWhitelisted,
+    #[msg("Fundraiser is whitelist-only; regular contributions are blocked")]
+    WhitelistRequired,
 }
+
