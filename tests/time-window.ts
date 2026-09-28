@@ -157,21 +157,34 @@ describe("fundraiser — contribution window", () => {
       })
       .rpc();
 
-  const refund = (c: Campaign) =>
-    program.methods
-      .refund()
+  // Redeems receipt #0, the NFT minted by the campaign's first contribution.
+  const refund = (c: Campaign) => {
+    const issue = new anchor.BN(0).toArrayLike(Buffer, "le", 8);
+    const [receipt] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), c.fundraiser.toBuffer(), issue],
+      program.programId
+    );
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt_mint"), c.fundraiser.toBuffer(), issue],
+      program.programId
+    );
+    return program.methods
+      .refund(new anchor.BN(0))
       .accountsPartial({
         contributor: provider.publicKey,
         maker: c.maker.publicKey,
         mintToRaise: c.mint,
         fundraiser: c.fundraiser,
-        contributorAccount: c.contributorAccount,
+        receipt,
+        receiptMint,
+        holderReceiptAta: getAssociatedTokenAddressSync(receiptMint, provider.publicKey),
         contributorAta: c.contributorAta,
         vault: c.vault,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .rpc();
+  };
 
   // ------------------------------------------------------------------
   // The window is open
