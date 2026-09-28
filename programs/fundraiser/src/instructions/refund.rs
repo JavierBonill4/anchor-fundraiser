@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{
+    burn,
+    Burn,
     transfer, 
     Mint, 
     Token, 
@@ -9,13 +11,17 @@ use anchor_spl::token::{
 
 use crate::{
     state::{
-        Contributor, 
-        Fundraiser
-    }, 
+        Fundraiser,
+        Receipt
+    },
+    FundraiserError,
     SECONDS_TO_DAYS
 };
 
+
 #[derive(Accounts)]
+#[instruction(issue_number: u64)]
+
 pub struct Refund<'info> {
     #[account(mut)]
     pub contributor: Signer<'info>,
@@ -28,13 +34,32 @@ pub struct Refund<'info> {
         bump = fundraiser.bump,
     )]
     pub fundraiser: Account<'info, Fundraiser>,
+        // The claim record. Seeds rebuilt from the issue number, so it must be the real receipt #N of THIS fundraiser.
     #[account(
         mut,
-        seeds = [b"contributor", fundraiser.key().as_ref(), contributor.key().as_ref()],
-        bump,
-        close = contributor,
+        seeds = [b"receipt", fundraiser.key().as_ref(), issue_number.to_le_bytes().as_ref()],
+        bump = receipt.bump,
+        close = contributor,          // delete it after paying, rent goes to whoever redeemed
     )]
-    pub contributor_account: Account<'info, Contributor>,
+    pub receipt: Box<Account<'info, Receipt>>,
+
+    // The NFT's mint, derived from the SAME issue number, so it can't be paired with a different receipt.
+    #[account(
+        mut,
+        seeds = [b"receipt_mint", fundraiser.key().as_ref(), issue_number.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub receipt_mint: Box<Account<'info, Mint>>,
+
+    // Proof of possession: the signer's token account for that NFT, holding exactly 1.
+    #[account(
+        mut,
+        token::mint = receipt_mint,
+        token::authority = contributor,
+        constraint = holder_receipt_ata.amount == 1 @ FundraiserError::NoReceipt,
+    )]
+    pub holder_receipt_ata: Box<Account<'info, TokenAccount>>,
+
     #[account(
         mut,
         associated_token::mint = mint_to_raise,
@@ -68,6 +93,15 @@ impl<'info> Refund<'info> {
             crate::FundraiserError::TargetMet
         );
 
+                // Burn the receipt NFT first. The holder signs this themselves, so no PDA seeds needed.
+        let burn_accounts = Burn {
+            mint: self.receipt_mint.to_account_info(),
+            from: self.holder_receipt_ata.to_account_info(),
+            authority: self.contributor.to_account_info(),
+        };
+        burn(CpiContext::new(self.token_program.key(), burn_accounts), 1)?;
+
+
         // Transfer the funds back to the contributor
         // CPI to the token program to transfer the funds
         // As of Anchor 1.0 a CpiContext takes the program's address, not its AccountInfo.
@@ -91,10 +125,10 @@ impl<'info> Refund<'info> {
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
 
         // Transfer the funds from the vault to the contributor
-        transfer(cpi_ctx, self.contributor_account.amount)?;
+        transfer(cpi_ctx, self.receipt.amount)?;
 
         // Update the fundraiser state by reducing the amount contributed
-        self.fundraiser.current_amount -= self.contributor_account.amount;
+        self.fundraiser.current_amount -= self.receipt.amount;
 
         Ok(())
     }
