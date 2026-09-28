@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "challenge": "fundraiser-feature",
+  "commit_sha": "",
+  "repo": "",
+  "run_id": "",
+  "canonical": {
+    "passed": 4,
+    "total": 4
+  },
+  "reference_check": {
+    "tests_pass_on_correct_program": true
+  },
+  "mutation": {
+    "killed": 0,
+    "total": 0,
+    "killed_ids": []
+  },
+  "notes": [
+    "New on-chain surface \u2014 instructions: whitelist_contributor; accounts: WhitelistEntry.",
+    "New declared error(s): NotWhitelisted, WhitelistRequired.",
+    "Test suite: 14 passing, 0 failing."
+  ]
+}

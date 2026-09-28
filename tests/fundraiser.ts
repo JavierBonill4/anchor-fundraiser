@@ -25,6 +25,8 @@ describe("fundraiser", () => {
 
   const contributor = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("contributor"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
 
+  const whitelistEntry = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("whitelist"), fundraiser.toBuffer(), provider.publicKey.toBuffer()], program.programId)[0];
+
   const confirm = async (signature: string): Promise<string> => {
     const block = await provider.connection.getLatestBlockhash();
     await provider.connection.confirmTransaction({
@@ -73,6 +75,22 @@ describe("fundraiser", () => {
 
     console.log("\nInitialized fundraiser Account");
     console.log("Your transaction signature", tx);
+
+    await program
+      .methods
+      .whitelistContributor(true)
+      .accountsPartial({
+        maker: maker.publicKey,
+        contributor: provider.publicKey,
+        fundraiser,
+        whitelistEntry,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([maker])
+      .rpc({
+        skipPreflight: true,
+      })
+      .then(confirm);
   });
 
   it("Contribute to Fundraiser", async () => {
@@ -83,6 +101,7 @@ describe("fundraiser", () => {
     .accountsPartial({
       contributor: provider.publicKey,
       fundraiser,
+      whitelistEntry,
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
@@ -108,6 +127,7 @@ describe("fundraiser", () => {
     .accountsPartial({
       contributor: provider.publicKey,
       fundraiser,
+      whitelistEntry,
       contributorAccount: contributor,
       contributorAta: contributorATA,
       vault,
@@ -135,6 +155,7 @@ describe("fundraiser", () => {
       .accountsPartial({
         contributor: provider.publicKey,
         fundraiser,
+        whitelistEntry,
         contributorAccount: contributor,
         contributorAta: contributorATA,
         vault,

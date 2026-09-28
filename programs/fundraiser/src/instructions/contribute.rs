@@ -1,20 +1,10 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
-    Transfer
-};
+use anchor_spl::token::{transfer, Mint, Token, TokenAccount, Transfer};
 
 use crate::{
-    state::{
-        Contributor, 
-        Fundraiser
-    }, FundraiserError, 
-    ANCHOR_DISCRIMINATOR, 
-    MAX_CONTRIBUTION_PERCENTAGE, 
-    PERCENTAGE_SCALER, SECONDS_TO_DAYS
+    state::{Contributor, Fundraiser, WhitelistEntry},
+    FundraiserError, ANCHOR_DISCRIMINATOR, MAX_CONTRIBUTION_PERCENTAGE, PERCENTAGE_SCALER,
+    SECONDS_TO_DAYS,
 };
 
 #[derive(Accounts)]
@@ -29,6 +19,11 @@ pub struct Contribute<'info> {
         bump = fundraiser.bump,
     )]
     pub fundraiser: Account<'info, Fundraiser>,
+    #[account(
+        seeds = [b"whitelist", fundraiser.key().as_ref(), contributor.key().as_ref()],
+        bump = whitelist_entry.bump,
+    )]
+    pub whitelist_entry: Account<'info, WhitelistEntry>,
     #[account(
         init_if_needed,
         payer = contributor,
@@ -55,7 +50,10 @@ pub struct Contribute<'info> {
 
 impl<'info> Contribute<'info> {
     pub fn contribute(&mut self, amount: u64) -> Result<()> {
-
+        require!(
+            self.whitelist_entry.is_allowed,
+            FundraiserError::NotWhitelisted
+        );
         // Check that the contribution is at least one whole token.
         //
         // The previous form was `1_u8.pow(decimals)`, and 1 raised to any power is 1
@@ -68,7 +66,9 @@ impl<'info> Contribute<'info> {
 
         // Check if the amount to contribute is less than the maximum allowed contribution
         require!(
-            amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER, 
+            amount
+                <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                    / PERCENTAGE_SCALER,
             FundraiserError::ContributionTooBig
         );
 
@@ -82,8 +82,12 @@ impl<'info> Contribute<'info> {
 
         // Check if the maximum contributions per contributor have been reached
         require!(
-            (self.contributor_account.amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER)
-                && (self.contributor_account.amount + amount <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE) / PERCENTAGE_SCALER),
+            (self.contributor_account.amount
+                <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                    / PERCENTAGE_SCALER)
+                && (self.contributor_account.amount + amount
+                    <= (self.fundraiser.amount_to_raise * MAX_CONTRIBUTION_PERCENTAGE)
+                        / PERCENTAGE_SCALER),
             FundraiserError::MaximumContributionsReached
         );
 
@@ -109,3 +113,4 @@ impl<'info> Contribute<'info> {
         Ok(())
     }
 }
+
