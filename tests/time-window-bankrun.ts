@@ -241,15 +241,28 @@ describe("fundraiser — the window closes (bankrun)", () => {
     }
 
     // The campaign failed, so the money has to be reachable again.
+    // Refunds are redeemed through the receipt NFT minted by the day-0 contribution: receipt #0.
+    const issue = new anchor.BN(0).toArrayLike(Buffer, "le", 8);
+    const [receipt] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), fundraiser.toBuffer(), issue],
+      program.programId
+    );
+    const [receiptMint] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt_mint"), fundraiser.toBuffer(), issue],
+      program.programId
+    );
+
     await send([
       await program.methods
-        .refund()
+        .refund(new anchor.BN(0))
         .accountsPartial({
           contributor: payer.publicKey,
           maker: maker.publicKey,
           mintToRaise: mint,
           fundraiser,
-          contributorAccount,
+          receipt,
+          receiptMint,
+          holderReceiptAta: getAssociatedTokenAddressSync(receiptMint, payer.publicKey),
           contributorAta,
           vault,
           tokenProgram: TOKEN_PROGRAM_ID,

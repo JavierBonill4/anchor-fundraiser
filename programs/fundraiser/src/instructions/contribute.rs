@@ -1,16 +1,24 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{
-    Mint, 
-    transfer, 
-    Token, 
-    TokenAccount, 
+    Mint,
+    mint_to,
+    MintTo,
+    set_authority,
+    SetAuthority,
+    transfer,
+    Token,
+    TokenAccount,
     Transfer
 };
+
+use anchor_spl::token::spl_token::instruction::AuthorityType;
+use anchor_spl::associated_token::AssociatedToken;
 
 use crate::{
     state::{
         Contributor, 
-        Fundraiser
+        Fundraiser,
+        Receipt
     }, FundraiserError, 
     ANCHOR_DISCRIMINATOR, 
     MAX_CONTRIBUTION_PERCENTAGE, 
@@ -49,12 +57,37 @@ pub struct Contribute<'info> {
         associated_token::authority = fundraiser
     )]
     pub vault: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = contributor,
+        seeds = [b"receipt", fundraiser.key().as_ref(), fundraiser.issue_count.to_le_bytes().as_ref()],
+        bump,
+        space = ANCHOR_DISCRIMINATOR + Receipt::INIT_SPACE,
+    )]
+    pub receipt: Account<'info, Receipt>,
+    #[account(
+        init,
+        payer = contributor,
+        seeds = [b"receipt_mint", fundraiser.key().as_ref(), fundraiser.issue_count.to_le_bytes().as_ref()],
+        bump,
+        mint::decimals = 0,
+        mint::authority = fundraiser,
+    )]
+    pub receipt_mint: Box<Account<'info, Mint>>,
+    #[account(
+        init,
+        payer = contributor,
+        associated_token::mint = receipt_mint,
+        associated_token::authority = contributor
+    )]
+    pub contributor_receipt_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
 impl<'info> Contribute<'info> {
-    pub fn contribute(&mut self, amount: u64) -> Result<()> {
+    pub fn contribute(&mut self, amount: u64, bumps: &ContributeBumps) -> Result<()> {
 
         // Check that the contribution is at least one whole token.
         //
@@ -105,6 +138,51 @@ impl<'info> Contribute<'info> {
         self.fundraiser.current_amount += amount;
 
         self.contributor_account.amount += amount;
+        self.receipt.amount = amount;
+        self.receipt.bump = bumps.receipt;
+                // The fundraiser PDA is the mint authority, so it has to "sign".
+        // A PDA has no private key; it signs by repeating the seeds that made it.
+        // These must match the fundraiser's seeds in the struct exactly:
+        // [b"fundraiser", maker, bump]
+        let signer_seeds: [&[&[u8]]; 1] = [&[
+            b"fundraiser".as_ref(),
+            self.fundraiser.maker.as_ref(),   // checker.rs has a `maker` account; we don't, so read it off the fundraiser
+            &[self.fundraiser.bump],
+        ]];
+
+        // Which accounts the token program needs for a mint
+        let mint_accounts = MintTo {
+            mint: self.receipt_mint.to_account_info(),               // what to mint
+            to: self.contributor_receipt_ata.to_account_info(),      // where it goes
+            authority: self.fundraiser.to_account_info(),            // who's allowed to mint
+        };
+
+        let mint_ctx = CpiContext::new_with_signer(
+            self.token_program.key(),
+            mint_accounts,
+            &signer_seeds,
+        );
+
+        // Mint exactly 1: it's a one-of-one
+        mint_to(mint_ctx, 1)?;
+                // Remove the mint authority so no second copy can ever be minted.
+        // The fundraiser is the current authority, so it signs with the same seeds.
+        let authority_accounts = SetAuthority {
+            current_authority: self.fundraiser.to_account_info(),
+            account_or_mint: self.receipt_mint.to_account_info(),
+        };
+
+        let authority_ctx = CpiContext::new_with_signer(
+            self.token_program.key(),
+            authority_accounts,
+            &signer_seeds,          // reuse the seeds from the mint step
+        );
+
+        // MintTokens = the "can mint" permission; None = nobody has it
+        set_authority(authority_ctx, AuthorityType::MintTokens, None)?;
+
+
+        self.fundraiser.issue_count = self.fundraiser.issue_count.checked_add(1).ok_or(FundraiserError::Overflow)?;
 
         Ok(())
     }

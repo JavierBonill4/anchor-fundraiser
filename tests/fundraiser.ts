@@ -189,15 +189,22 @@ describe("fundraiser", () => {
   it("Refund Contributions - refused while the window is open", async () => {
     const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+    // Redeem receipt #0, minted by the first contribution above.
+    const issue = new anchor.BN(0).toArrayLike(Buffer, "le", 8);
+    const receipt = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("receipt"), fundraiser.toBuffer(), issue], program.programId)[0];
+    const receiptMint = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("receipt_mint"), fundraiser.toBuffer(), issue], program.programId)[0];
+
     try {
       await program.methods
-      .refund()
+      .refund(new anchor.BN(0))
       .accountsPartial({
         contributor: provider.publicKey,
         maker: maker.publicKey,
         mintToRaise: mint,
         fundraiser,
-        contributorAccount: contributor,
+        receipt,
+        receiptMint,
+        holderReceiptAta: getAssociatedTokenAddressSync(receiptMint, provider.publicKey),
         contributorAta: contributorATA,
         vault,
         tokenProgram: TOKEN_PROGRAM_ID,
