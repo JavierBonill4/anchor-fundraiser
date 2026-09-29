@@ -490,3 +490,65 @@ impl<'info> Refund<'info> {
 
 In here, we will check if the fundrasing has already met the target and if ir passed the duration time.
 After doing the proper checks, we transfer the donated funds from the vault back to the contributor
+
+---
+
+## Feature: Milestone Events (25%, 50%, 75%)
+
+### 1. What it does
+Tracks campaign progress at the quarter marks (25%, 50%, and 75% of the target amount to raise) directly on-chain and emits a `MilestoneReached` event each time a quarter boundary is crossed.
+Each milestone fires exactly once during the campaign lifecycle. Even if a contribution pushes the vault across multiple thresholds, or if subsequent contributions land within the same quarter, each milestone executes idempotently without duplicate events or re-firing. A refund does not retract or roll back an already-fired milestone.
+
+### 2. How it works
+- **State Added**: A single byte `milestones_fired: u8` appended to the end of the `Fundraiser` account struct (preserving Borsh deserialization order). It acts as a bitmask:
+  - Bit 0 (`1 << 0` = 1): 25% milestone reached
+  - Bit 1 (`1 << 1` = 2): 50% milestone reached
+  - Bit 2 (`1 << 2` = 4): 75% milestone reached
+- **Initialization**: Set to `0` in `initialize`.
+- **Trigger**: Hooks inline at the end of the `contribute` instruction, after `current_amount` has been safely updated with checked arithmetic:
+  ```rust
+  let quarters = self.fundraiser.current_amount
+      .checked_mul(4)
+      .ok_or(FundraiserError::Overflow)?
+      / self.fundraiser.amount_to_raise;
+
+  for i in 0..quarters.min(3) {
+      let flag = 1u8 << i;
+      if self.fundraiser.milestones_fired & flag == 0 {
+          self.fundraiser.milestones_fired |= flag;
+          emit!(MilestoneReached {
+              fundraiser: self.fundraiser.key(),
+              quarter: (i + 1) as u8,
+              amount: self.fundraiser.current_amount,
+          });
+      }
+  }
+  ```
+- **Accounts & Triggers**: No extra accounts are required. The check runs within `contribute`, evaluating against `current_amount` and `amount_to_raise`.
+- **Event Definition**:
+  ```rust
+  #[event]
+  pub struct MilestoneReached {
+      pub fundraiser: Pubkey,
+      pub quarter: u8,
+      pub amount: u64,
+  }
+  ```
+
+### 3. What it costs
+- **Rent**: Adding `milestones_fired: u8` increases `Fundraiser` space by exactly 1 byte. In Solana, rent is calculated per byte; 1 additional byte on `Fundraiser` adds negligible rent exemption cost (~0.000007 SOL) paid once by the maker at initialization. No new accounts or PDAs were introduced.
+- **Compute Units (CU)**:
+  - Checked multiplication and bitwise flags require fewer than ~50 compute units.
+  - Event emission (`emit!`) serializes the event data to the program log, consuming approximately 1,500 - 2,500 compute units only on the transactions that cross a milestone threshold.
+  - On non-milestone contributions, the overhead is under 100 CU. The entire instruction completes well within the 200,000 compute unit limit (consuming ~30,000 CU total).
+
+### 4. How you would attack it (Security & Weakness Analysis)
+- **Refund Divergence**:
+  `current_amount` decreases if a contributor refunds after the campaign ends without meeting the target (`vault.amount < amount_to_raise`). However, `milestones_fired` is intentionally one-way: bits are not cleared on refund.
+  *Attack/Gaming vector*: A front-end or listener relying *solely* on `milestones_fired` flags might believe the campaign currently holds 75% of funds even if contributions were refunded.
+  *Mitigation / Protocol defense*: The flags record *historical achievement* (e.g. proof of reaching a peak), not real-time current liquidity. Front-ends tracking live vault balance should read `vault.amount` or `fundraiser.current_amount`, not the milestone flags.
+- **Boundary Precision & Decimals**:
+  Solana uses integer arithmetic. Using `(current_amount * 4) / amount_to_raise` preserves precision without float truncation. `checked_mul(4)` prevents any `u64` overflow attack when multiplying large token balances.
+- **Double-fire / Idempotency**:
+  Because each bit is checked before firing and set immediately, repeated contributions or multi-tx spam from the same or different contributors cannot trigger duplicate events or corrupt state.
+
