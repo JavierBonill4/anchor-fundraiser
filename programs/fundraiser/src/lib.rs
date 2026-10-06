@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("7WferfAMCt6f32DYucuQNhnSYdoV7SWSR92od8t1jDzW");
+declare_id!("9V2cdwVpmfkTsYaLiFkyFLnv1cuN9s3P3ebuMXc4niN3");
 
 mod state;
 mod instructions;
@@ -22,9 +22,9 @@ pub mod fundraiser {
         Ok(())
     }
 
-    pub fn contribute(ctx: Context<Contribute>, amount: u64) -> Result<()> {
+    pub fn contribute<'a>(ctx: Context<'a, Contribute<'a>>, amount: u64) -> Result<()> {
 
-        ctx.accounts.contribute(amount)?;
+        ctx.accounts.contribute(amount, ctx.remaining_accounts)?;
 
         Ok(())
     }
@@ -33,6 +33,11 @@ pub mod fundraiser {
 
         ctx.accounts.check_contributions()?;
 
+        Ok(())
+    }
+
+    pub fn deposit_match(ctx: Context<DepositMatch>, amount: u64) -> Result<()> {
+        ctx.accounts.deposit_match(amount)?;
         Ok(())
     }
 
