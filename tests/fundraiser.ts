@@ -210,4 +210,69 @@ describe("fundraiser", () => {
       console.log(error.error?.errorCode?.code ?? error.message);
     }
   });
+  it("Cancel Fundraiser - refused once the vault holds contributions", async () => {
+    const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+    try {
+      await program.methods
+      .cancel()
+      .accountsPartial({
+        maker: maker.publicKey,
+        mintToRaise: mint,
+        fundraiser,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([maker])
+      .rpc();
+      throw new Error("the cancel should have been refused");
+    } catch (error) {
+      console.log("\nCancel refused while the vault holds contributions");
+      console.log(error.error?.errorCode?.code ?? error.message);
+    }
+  });
+
+  it("Cancel Fundraiser - empty fundraiser is closed and rent returned", async () => {
+    const emptyMaker = anchor.web3.Keypair.generate();
+    await provider.connection.requestAirdrop(emptyMaker.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL).then(confirm);
+
+    const emptyFundraiser = anchor.web3.PublicKey.findProgramAddressSync([Buffer.from("fundraiser"), emptyMaker.publicKey.toBuffer()], program.programId)[0];
+    const emptyVault = getAssociatedTokenAddressSync(mint, emptyFundraiser, true);
+
+    await program.methods
+    .initialize(new anchor.BN(30000000), 7)
+    .accountsPartial({
+      maker: emptyMaker.publicKey,
+      mintToRaise: mint,
+      fundraiser: emptyFundraiser,
+      vault: emptyVault,
+      systemProgram: anchor.web3.SystemProgram.programId,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    })
+    .signers([emptyMaker])
+    .rpc()
+    .then(confirm);
+
+    await program.methods
+    .cancel()
+    .accountsPartial({
+      maker: emptyMaker.publicKey,
+      mintToRaise: mint,
+      fundraiser: emptyFundraiser,
+      vault: emptyVault,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      systemProgram: anchor.web3.SystemProgram.programId,
+    })
+    .signers([emptyMaker])
+    .rpc()
+    .then(confirm);
+
+    const closed = await provider.connection.getAccountInfo(emptyFundraiser);
+    if (closed !== null) throw new Error("fundraiser account should be closed");
+    console.log("\nEmpty fundraiser cancelled and closed");
+  });
 });

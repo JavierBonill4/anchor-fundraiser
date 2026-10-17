@@ -42,4 +42,11 @@ pub mod fundraiser {
 
         Ok(())
     }
+
+    pub fn cancel(ctx: Context<Cancel>) -> Result<()> {
+
+        ctx.accounts.cancel()?;
+
+        Ok(())
+    }
 }
